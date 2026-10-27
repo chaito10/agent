@@ -1,0 +1,3239 @@
+<!DOCTYPE html>
+<!--
+  agent.html - a pluggable agent harness where every subsystem is a tool.
+
+  The browser twin of agent.py and agent.js: the same nine components (skills,
+  tools, memory, context, hooks, control/guardrails, orchestration loop,
+  prompts, tasks/scheduler), the same tool names, the same action contract and
+  the same funnel. One file, no dependencies, no build step, no CDN - open it
+  with file:/// and drive the loop from the panel.
+
+    {"thought": "...", "call": {"tool": "<name>", "args": {...}}}   // act
+    {"thought": "...", "final": "..."}                              // stop
+
+  Nothing touches your disk. The filesystem tools run against a virtual fs that
+  lives in this tab, memory and settings persist in localStorage, and network
+  tools stay off until you tick "allow network".
+
+  Four panels, one visible at a time:
+    chat    - the conversation: goal, thoughts, one chip per tool call, the answer
+    config  - turn each tool on or off, set its default args, approve it, call it
+    debug   - the call journal, runs, hook firings, context, memory, tasks, jobs,
+              the virtual fs, every prompt layer and agent.panel() as json
+    demos   - the worked examples as cards; each runs a fresh agent and checks it
+
+  cli-free: there is no command line here; `node agent.js panel` prints the same
+  JSON that the debug panel's "panel json" shows.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent harness - control panel</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #171d23; --edge: #26313b; --ink: #d8e2ea; --dim: #7f95a6;
+    --ok: #4fbf8b; --warn: #e0a34a; --bad: #e5646a; --accent: #5aa9e6; --mono: ui-monospace, Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 14px;
+           background: var(--panel); border-bottom: 1px solid var(--edge); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; letter-spacing: .3px; }
+  header .tag { color: var(--dim); font: 11px var(--mono); }
+  input[type=text], select, textarea { background: #0c1014; color: var(--ink); border: 1px solid var(--edge);
+           border-radius: 4px; padding: 5px 7px; font: 12px var(--mono); }
+  input#goal { flex: 1 1 320px; min-width: 220px; }
+  button { background: #223038; color: var(--ink); border: 1px solid var(--edge); border-radius: 4px;
+           padding: 5px 11px; font: 12px var(--mono); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #1c3a52; border-color: #2f6b96; }
+  button.danger { background: #3a1f22; border-color: #6b3236; }
+  label.check { color: var(--dim); font: 11px var(--mono); display: inline-flex; gap: 4px; align-items: center; }
+  main { display: grid; gap: 10px; padding: 12px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  section { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; overflow: hidden; }
+  section.wide { grid-column: 1 / -1; }
+  section > h2 { margin: 0; padding: 7px 10px; font: 600 11px/1 var(--mono); letter-spacing: 1.2px;
+                 text-transform: uppercase; color: var(--dim); background: #131920; border-bottom: 1px solid var(--edge);
+                 display: flex; justify-content: space-between; gap: 8px; }
+  section > h2 .count { color: var(--accent); }
+  .body { padding: 8px 10px; max-height: 300px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font: 11px var(--mono); }
+  th { text-align: left; color: var(--dim); font-weight: 500; padding: 2px 6px 2px 0; }
+  td { padding: 2px 6px 2px 0; border-top: 1px solid #1d242b; vertical-align: top; }
+  .kind { color: var(--dim); }
+  .marks { font-weight: 700; }
+  .marks .d { color: var(--bad); } .marks .m { color: var(--warn); } .marks .n { color: var(--accent); }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+  .chip { font: 11px var(--mono); background: #202a33; border: 1px solid var(--edge); border-radius: 999px; padding: 1px 8px; }
+  .chip.active { border-color: var(--ok); color: var(--ok); }
+  .chip.missing { border-color: var(--bad); color: var(--bad); }
+  .bar { height: 7px; background: #0c1014; border: 1px solid var(--edge); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ok); }
+  .bar i.hot { background: var(--bad); }
+  .kv { font: 11px var(--mono); color: var(--dim); display: grid; grid-template-columns: auto 1fr; gap: 1px 8px; }
+  .kv b { color: var(--ink); font-weight: 500; }
+  pre { margin: 0; font: 11px/1.5 var(--mono); color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+  #console { max-height: 420px; }
+  .turn { border-left: 3px solid var(--edge); padding: 3px 8px; margin: 3px 0; font: 11px var(--mono); }
+  .turn.ok { border-color: var(--ok); } .turn.block { border-color: var(--bad); background: #1b1417; }
+  .turn.err { border-color: var(--warn); } .turn.final { border-color: var(--accent); }
+  .turn .thought { color: var(--dim); }
+  .empty { color: var(--dim); font: 11px var(--mono); font-style: italic; }
+  textarea { width: 100%; min-height: 64px; resize: vertical; }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); }
+  /* four panels, one at a time */
+  nav.tabs { display: flex; gap: 4px; margin-right: 6px; }
+  nav.tabs button { padding: 4px 14px; border-radius: 999px; }
+  nav.tabs button.on { border-color: var(--accent); color: var(--accent); background: #12202b; }
+  main { display: block; padding: 12px; }
+  .pane { display: none; }
+  .pane.on { display: block; }
+  .pane section { margin-bottom: 10px; }
+  .pane .body { max-height: 460px; }
+  .grid2 { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  /* chat */
+  .chat { display: flex; flex-direction: column; gap: 10px; }
+  .chat-log { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; padding: 10px;
+              height: calc(100vh - 300px); min-height: 300px; overflow: auto;
+              display: flex; flex-direction: column; gap: 5px; }
+  .msg { max-width: 82%; padding: 5px 10px; border-radius: 10px; }
+  .msg.user { align-self: flex-end; background: #1c3a52; border: 1px solid #2f6b96; }
+  .msg.assistant { align-self: flex-start; background: #14211b; border: 1px solid #2b5c45; }
+  .msg.thought, .msg.note { align-self: flex-start; color: var(--dim); font: 11px var(--mono); max-width: 92%; }
+  .msg.note { align-self: center; }
+  .msg.call { align-self: stretch; max-width: 98%; font: 11px var(--mono); background: #131920;
+              border: 1px solid var(--edge); border-radius: 6px; padding: 3px 8px; }
+  .msg.call.ok { border-left: 3px solid var(--ok); }
+  .msg.call.block { border-left: 3px solid var(--bad); background: #1b1417; }
+  .msg.call.err { border-left: 3px solid var(--warn); }
+  .msg details { margin-top: 2px; } .msg summary { cursor: pointer; color: var(--dim); font: 10px var(--mono); }
+  .composer { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; }
+  textarea#goal { min-height: 46px; font: 13px system-ui, sans-serif; }
+  /* config */
+  .tool-row { display: grid; grid-template-columns: 60px 1fr auto auto; gap: 8px; align-items: center;
+              border-top: 1px solid #1d242b; padding: 4px 0; font: 11px var(--mono); }
+  .tool-row .why { color: var(--bad); }
+  .why { color: var(--bad); }
+  .drawer { grid-column: 1 / -1; background: #10161b; border: 1px solid var(--edge); border-radius: 6px;
+            padding: 8px; margin: 6px 0; display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .drawer h4 { margin: 0 0 4px; font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: 1px; color: var(--dim); }
+  .switch { display: inline-flex; align-items: center; gap: 6px; font: 11px var(--mono); color: var(--dim); cursor: pointer; }
+  .switch i { width: 30px; height: 16px; background: #2a3540; border: 1px solid var(--edge); border-radius: 999px;
+              position: relative; display: inline-block; }
+  .switch i::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
+              border-radius: 50%; background: var(--dim); transition: left .12s; }
+  .switch.on i { background: #1d4b38; border-color: var(--ok); }
+  .switch.on i::after { left: 16px; background: var(--ok); }
+  input[type=number] { width: 74px; background: #0c1014; color: var(--ink); border: 1px solid var(--edge);
+              border-radius: 4px; padding: 4px 6px; font: 12px var(--mono); }
+  .knob { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; font: 11px var(--mono); align-items: center; }
+  .knob span { color: var(--dim); }
+  /* debug */
+  #calls table { table-layout: fixed; }
+  #calls td { overflow-wrap: anywhere; }
+  #calls summary { cursor: pointer; color: var(--accent); font: 11px var(--mono); }
+  #calls td.blocked { color: var(--bad); } #calls td.error { color: var(--warn); } #calls td.ok { color: var(--dim); }
+  .badge { font: 10px var(--mono); border-radius: 999px; padding: 1px 8px; border: 1px solid var(--edge); color: var(--dim); }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.fail { color: var(--bad); border-color: var(--bad); }
+  .badge.run { color: var(--warn); border-color: var(--warn); }
+  /* demos */
+  .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; padding: 10px;
+          display: flex; flex-direction: column; gap: 6px; }
+  .card.on { border-color: var(--accent); }
+  .card h3 { margin: 0; font: 600 13px var(--mono); display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .card .facts { font: 11px var(--mono); color: var(--dim); }
+  .card pre.verdict { min-height: 26px; max-height: 150px; overflow: auto; color: var(--dim); }
+  footer { padding: 8px 14px 18px; color: var(--dim); font: 11px var(--mono); }
+</style>
+</head>
+<body>
+<header>
+  <h1>agent harness</h1>
+  <nav class="tabs" id="tabs">
+    <button class="on" data-tab="chat">chat</button>
+    <button data-tab="config">config</button>
+    <button data-tab="debug">debug</button>
+    <button data-tab="demos">demos</button>
+  </nav>
+  <label class="check">model <select id="model" aria-label="model"></select></label>
+  <button class="danger" id="stop">stop</button>
+  <button id="reset">reset</button>
+  <span class="tag" id="status">idle</span>
+</header>
+
+<main>
+  <!-- 1 - the conversation ----------------------------------------------- -->
+  <section class="pane on" id="pane-chat">
+    <div class="chat">
+      <div class="chat-log" id="chat-log"></div>
+      <div class="composer">
+        <textarea id="goal" spellcheck="false" aria-label="goal"
+          placeholder="ask the agent something - it can only act through the tools you leave enabled"></textarea>
+        <div class="row">
+          <button class="primary" id="run">send</button>
+          <button id="step">step one turn</button>
+          <label class="check">speed <input id="speed" type="range" min="0" max="900" step="50" value="150" style="width:90px"></label>
+          <button id="clear-chat">clear chat</button>
+          <span class="tag" id="c-chat">0 lines</span>
+          <span class="tag" id="trail"></span>
+        </div>
+        <details><summary>script queue for <code>model.scripted</code></summary>
+          <textarea id="script" spellcheck="false" style="min-height:96px"
+            placeholder="JSON array of actions for model.set_script"></textarea>
+          <div class="row"><button id="load-script">load script</button></div>
+        </details>
+        <details><summary>next action for <code>model.manual</code></summary>
+          <textarea id="action" spellcheck="false"
+            placeholder='{"thought": "look", "call": {"tool": "fs.read", "args": {"path": "notes.md"}}}'></textarea>
+          <div class="row"><button id="use-manual">drive it myself (model.manual)</button></div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 - configuration and settings -------------------------------------- -->
+  <section class="pane" id="pane-config">
+    <div class="row" style="padding:0 2px 10px">
+      <label class="switch" id="sw-net"><input type="checkbox" id="net"><i></i>allow network</label>
+      <label class="switch" id="sw-dry"><input type="checkbox" id="dry"><i></i>dry run</label>
+      <label class="switch" id="sw-grant"><input type="checkbox" id="grant"><i></i>auto-approve fs.write</label>
+      <button id="settings-clear">forget saved settings</button>
+      <span class="tag" id="settings-note"></span>
+    </div>
+    <div class="grid2">
+      <section><h2>tools <span class="count" id="c-tools"></span></h2>
+        <div class="body">
+          <div class="tabs" id="tool-tabs"></div>
+          <div class="row"><input id="tool-filter" type="text" placeholder="filter by name" style="flex:1">
+            <button id="tool-add">add a plug-in tool</button></div>
+          <div id="tools"></div>
+        </div>
+      </section>
+      <div>
+        <section><h2>control and guard rails <span class="count" id="c-blocks"></span></h2>
+          <div class="body" id="guardrails"></div></section>
+        <section><h2>budgets + rules <span class="count">policy.set</span></h2>
+          <div class="body" id="policy-editor"></div></section>
+      </div>
+      <section><h2>hooks <span class="count" id="c-hooks"></span></h2>
+        <div class="body" id="hooks"></div></section>
+      <section><h2>skills <span class="count" id="c-skills"></span></h2>
+        <div class="body" id="skills"></div></section>
+      <section><h2>model endpoints <span class="count">stored as tool defaults</span></h2>
+        <div class="body" id="endpoints"></div></section>
+    </div>
+  </section>
+
+  <!-- 3 - everything the loop did, visible ------------------------------- -->
+  <section class="pane" id="pane-debug">
+    <section><h2>call journal <span class="count" id="c-calls"></span></h2>
+      <div class="body">
+        <div class="row"><input id="call-filter" type="text" placeholder="filter tool, source or kind" style="flex:1">
+          <label class="check">blocked only<input type="checkbox" id="call-blocked"></label>
+          <label class="check">errors only<input type="checkbox" id="call-error"></label>
+          <button id="calls-expand">expand all</button><button id="calls-collapse">collapse</button></div>
+        <div id="calls"></div>
+      </div>
+    </section>
+    <section><h2>runs <span class="count" id="c-runs"></span></h2>
+      <div class="body" id="runs"></div></section>
+    <div class="grid2">
+      <section><h2>hook firings <span class="count" id="c-firings"></span></h2>
+        <div class="body" id="firings"></div></section>
+      <section><h2>context window <span class="count" id="c-ctx"></span></h2>
+        <div class="body" id="context"></div></section>
+      <section><h2>memory <span class="count" id="c-mem"></span></h2>
+        <div class="body" id="memory"></div></section>
+      <section><h2>tasks <span class="count" id="c-tasks"></span></h2>
+        <div class="body" id="tasks"></div></section>
+      <section><h2>scheduler <span class="count" id="c-jobs"></span></h2>
+        <div class="body" id="scheduler"></div></section>
+      <section><h2>virtual filesystem <span class="count" id="c-fs"></span></h2>
+        <div class="body" id="files"></div></section>
+    </div>
+    <section><h2>system prompt <span class="count" id="c-prompt"></span></h2>
+      <div class="body" id="prompt-layers"></div>
+      <div class="body"><pre id="prompt" data-text=""></pre></div></section>
+    <section><h2>panel json <span class="count">agent.panel()</span></h2>
+      <div class="body"><pre id="panel"></pre></div></section>
+  </section>
+
+  <!-- 4 - the worked examples, as cards you can run ----------------------- -->
+  <section class="pane" id="pane-demos">
+    <div class="row"><button class="primary" id="demo-run-all">run every card</button>
+      <span class="tag" id="demo-summary">each card runs a fresh agent through the same funnel and checks what it did</span></div>
+    <div class="cards" id="cards"></div>
+  </section>
+</main>
+
+<footer>same nine components, same tool names as <code>agent.py</code> and <code>agent.js</code> - one funnel:
+registry &rarr; pre_tool hooks &rarr; policy &rarr; handler &rarr; post_tool hooks &rarr; context.</footer>
+
+<script>
+'use strict';
+// -- engine ------------------------------------------------------------
+const DEFAULT_TOOLS_DIR = 'tools';
+const PATH_KEYS = ['path', 'file', 'dir', 'from', 'to', 'cwd', 'root'];
+const JSON_TYPES = { string: 'string', integer: 'integer', number: 'number', boolean: 'boolean', array: 'array', object: 'object' };
+const TASK_STATUSES = ['pending', 'in_progress', 'completed', 'blocked', 'deleted'];
+const HOOK_EVENTS = ['plan', 'pre_tool', 'post_tool', 'tool_error', 'stop'];
+const ANY = '*';
+const NL = '\n';
+
+const USAGE = 'agent.html - open the file, pick a script, press run.';
+const estimateTokens = (text) => Math.max(1, Math.floor(String(text ?? '').length / 4));
+const nowSeconds = () => Date.now() / 1000;
+const clone = (value) => JSON.parse(JSON.stringify(value ?? null));
+
+function resolvePath(candidate, root) {
+  const raw = String(candidate ?? '').replace(/\\/g, '/');
+  const base = (root || '/').replace(/\/+$/, '') || '/';
+  const parts = (raw.startsWith('/') ? raw : `${base}/${raw}`).split('/');
+  const out = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') out.pop(); else out.push(part);
+  }
+  return '/' + out.join('/');
+}
+
+const under = (target, base) => {
+  const a = resolvePath(target, ''), b = resolvePath(base, '');
+  if (b === '/') return true;
+  return a === b || a.startsWith(b + '/');
+};
+
+function coerce(value, type) {
+  switch (type) {
+    case 'integer': case 'number': {
+      if (typeof value === 'boolean') throw new TypeError(`expected a number, got ${value}`);
+      const num = Number(value);
+      if (Number.isNaN(num)) throw new TypeError(`expected a number, got ${JSON.stringify(value)}`);
+      return type === 'integer' ? Math.trunc(num) : num;
+    }
+    case 'boolean':
+      if (typeof value === 'string') return !['', '0', 'false', 'False', 'none', 'null'].includes(value.trim().toLowerCase());
+      return Boolean(value);
+    case 'array': case 'object':
+      if (typeof value === 'string') {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed) !== (type === 'array')) throw new TypeError(`expected ${type}`);
+        return parsed;
+      }
+      if (Array.isArray(value) !== (type === 'array')) throw new TypeError(`expected ${type}`);
+      return value;
+    case 'string':
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    default: return value;
+  }
+}
+
+function firstJson(text) {
+  const raw = String(text ?? '');
+  let start = raw.indexOf('{');
+  while (start >= 0) {
+    let depth = 0, inString = false, escape = false;
+    for (let index = start; index < raw.length; index += 1) {
+      const char = raw[index];
+      if (inString) {
+        if (escape) escape = false;
+        else if (char === '\\') escape = true;
+        else if (char === '"') inString = false;
+      } else if (char === '"') inString = true;
+      else if (char === '{') depth += 1;
+      else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try { const parsed = JSON.parse(raw.slice(start, index + 1)); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed; }
+          catch (error) { break; }
+        }
+      }
+    }
+    start = raw.indexOf('{', start + 1);
+  }
+  return null;
+}
+
+function globToRegExp(pattern) {
+  /* fnmatch semantics, identical to agent.py and agent.js: * any run, ? one char. */
+  let out = '';
+  for (const char of String(pattern)) {
+    if (char === '*') out += '[\\s\\S]*';
+    else if (char === '?') out += '[\\s\\S]';
+    else if ('.+^${}()|\\'.includes(char)) out += `\\${char}`;
+    else out += char;
+  }
+  try { return new RegExp(`^${out}$`, 'u'); }
+  catch (error) { return new RegExp(`^${String(pattern).split('').map((c) => ('.+^${}()|[]\\'.includes(c) ? `\\${c}` : c)).join('')}$`); }
+}
+const fnmatch = (name, pattern) => globToRegExp(pattern).test(String(name));
+const matchesAny = (name, patterns) => (patterns || []).some((pattern) => fnmatch(name, pattern));
+
+function splitCommand(cmd) {
+  /* shlex.split for the common case, same rules as agent.js: words, quotes, backslash escapes. */
+  const argv = [];
+  let current = '', quoted = null, started = false;
+  for (let index = 0; index < String(cmd).length; index += 1) {
+    const char = String(cmd)[index];
+    if (quoted) {
+      if (char === quoted) quoted = null;
+      else if (char === '\\' && quoted === '"') { index += 1; current += String(cmd)[index] || ''; }
+      else current += char;
+    } else if (char === '"' || char === "'") { quoted = char; started = true; }
+    else if (/\s/.test(char)) { if (started) { argv.push(current); current = ''; started = false; } }
+    else { current += char; started = true; }
+  }
+  if (started) argv.push(current);
+  return argv;
+}
+
+const TAG_RE = /<[^>]+>/g;
+const NOISE_RE = /<(script|style)[^>]*>[\s\S]*?<\/\1>/gi;
+const TITLE_RE = /<title[^>]*>([\s\S]*?)<\/title>/i;
+const LINK_RE = /<a[^>]*href=["']?([^"'> ]+)["']?[^>]*>([\s\S]*?)<\/a>/gi;
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', nbsp: ' ', '#39': "'", '#x27': "'", '#039': "'" };
+const unescapeText = (value) => String(value).replace(/&(amp|lt|gt|quot|nbsp|#39|#x27|#039);?/gi,
+  (whole, name) => (ENTITIES[String(name).toLowerCase()] === undefined ? whole : ENTITIES[String(name).toLowerCase()]));
+
+function htmlReduce(markup) {
+  /* A page, cut down to the three things an agent reads: title, running text, links. */
+  const stripped = String(markup ?? '').replace(NOISE_RE, ' ');
+  const flat = (value) => unescapeText(value.replace(TAG_RE, ' ')).replace(/\s+/g, ' ').trim();
+  const found = TITLE_RE.exec(stripped);
+  const body = found ? stripped.replace(found[0], ' ') : stripped;
+  const links = [];
+  for (const match of body.matchAll(LINK_RE)) {
+    if (links.length >= 20) break;
+    links.push({ href: match[1], text: flat(match[2]) });
+  }
+  return { title: found ? flat(found[1]) : '', text: flat(body).slice(0, 8000), links };
+}
+
+const SHELL_KNOWN = ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo'];
+
+function virtualShell(cmd, root) {
+  /* shell.run in the browser twin: a real argv over this tab's virtual fs. No pipes, no redirection. */
+  const argv = splitCommand(cmd);
+  if (!argv.length) throw new ToolError('empty command');
+  const [program, ...rest] = argv;
+  if (!SHELL_KNOWN.includes(program)) throw new ToolError(`program not found: ${program}`
+    + ` (this shell knows ${SHELL_KNOWN.join(' ')})`);
+  const positional = [], switches = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const token = rest[index];
+    if (token === '-n') { positional.n = Number(rest[index + 1]) || 10; index += 1; }
+    else if (token.startsWith('-')) switches.push(token.slice(-1));
+    else positional.push(token);
+  }
+  const lines = [], errors = [];
+  let code = 0;
+  const die = (status, message) => { errors.push(message); code = status; };
+  const fileAt = (name) => {
+    const target = resolvePath(name, root);
+    if (!under(target, resolvePath(root, ''))) { die(1, `${name}: escapes the sandbox`); return null; }
+    if (!(target in VFS)) { die(1, `${name}: no such file`); return null; }
+    return String(VFS[target]);
+  };
+  const read = (name) => { const text = fileAt(name); return text === null ? null : text.split('\n'); };
+  if (program === 'pwd') lines.push(resolvePath(root, ''));
+  else if (program === 'echo') lines.push(rest.join(' '));
+  else if (program === 'ls') {
+    const target = resolvePath(positional[0] || '.', root);
+    const rows = new Set();
+    for (const name of Object.keys(VFS)) {
+      if (!under(name, target) || name === target) continue;
+      const tail = name.slice(target === '/' ? 1 : target.length + 1);
+      rows.add(tail.includes('/') ? `${tail.split('/')[0]}/` : tail);
+    }
+    lines.push(...[...rows].sort());
+  } else if (program === 'cat') {
+    for (const name of positional) { const body = read(name); if (body) lines.push(...body); }
+  } else if (program === 'head' || program === 'tail') {
+    const count = positional.n || 10;
+    for (const name of positional) {
+      const body = read(name);
+      if (body) lines.push(...(program === 'head' ? body.slice(0, count) : body.slice(-count)));
+    }
+  } else if (program === 'wc') {
+    for (const name of positional) {
+      const body = read(name);
+      if (!body) continue;
+      const text = body.join('\n');
+      const counts = [body.length - 1, text.split(/\s+/).filter(Boolean).length, text.length];
+      const shown = switches.includes('l') ? [counts[0]] : switches.includes('w') ? [counts[1]] : counts;
+      lines.push(`${shown.join(' ')} ${name}`);
+    }
+  } else if (program === 'grep') {
+    const needle = positional[0];
+    if (!needle || positional.length < 2) die(2, 'usage: grep pattern file...');
+    for (const name of (positional.slice(1) || [])) {
+      const body = read(name);
+      if (!body) continue;
+      for (const line of body) if (line.includes(needle)) lines.push(`${name}:${line}`);
+    }
+    if (!lines.length && !errors.length) code = 1;
+  }
+  return { cmd, code, stdout: lines.length ? `${lines.join('\n')}\n` : '', stderr: errors.join('\n') };
+}
+
+class ToolError extends Error {}
+class Blocked extends Error {}
+class UnknownTool extends Error {}
+class SandboxError extends Error {}
+// ---------------------------------------------------------------------------
+// tools — the one interface everything speaks
+// ---------------------------------------------------------------------------
+
+class Tool {
+  constructor({ name, desc = '', handler, args = {}, required = [], kind = 'tool',
+                mutating = false, network = false, danger = false, deletes = false, plugin = 'core' }) {
+    Object.assign(this, { name, desc, handler, args, kind, plugin });
+    this.required = Array.isArray(required) ? [...required] : [...required];
+    this.mutating = !!mutating; this.network = !!network; this.danger = !!danger; this.deletes = !!deletes;
+  }
+
+  static argType(hint) {
+    if (typeof hint === 'string') return hint;
+    if (Array.isArray(hint)) return hint[0];
+    return typeof hint === 'function' && hint.name ? hint.name.toLowerCase() : 'string';
+  }
+
+  schema() {
+    const props = {};
+    for (const [key, hint] of Object.entries(this.args)) {
+      const description = typeof hint === 'string' ? hint : (Array.isArray(hint) && hint.length > 1 ? hint[1] : '');
+      props[key] = { type: JSON_TYPES[Tool.argType(hint)] || 'string', description: description || this.desc };
+    }
+    return { type: 'object', properties: props, required: [...this.required] };
+  }
+
+  openaiSpec() { return { type: 'function', function: { name: this.name, description: this.desc, parameters: this.schema() } }; }
+
+  async call(args) {
+    const bound = {};
+    for (const [key, value] of Object.entries(args || {})) {
+      if (!(key in this.args)) {
+        throw new ToolError(`${this.name} got unexpected arg '${key}'; it takes `
+          + `${Object.keys(this.args).length ? JSON.stringify(Object.keys(this.args).sort()) : 'nothing'}`);
+      }
+      try { bound[key] = coerce(value, Tool.argType(this.args[key])); }
+      catch (error) { throw new ToolError(`${this.name} arg '${key}': ${error.message}`); }
+    }
+    const missing = this.required.filter((key) => !(key in bound));
+    if (missing.length) throw new ToolError(`${this.name} is missing required arg(s): ${missing.join(', ')}`);
+    return this.handler(bound);
+  }
+
+  brief() {
+    const args = {};
+    for (const [key, hint] of Object.entries(this.args)) {
+      args[key] = typeof hint === 'string' ? hint : (Array.isArray(hint) ? hint[0] : 'string');
+    }
+    return { name: this.name, kind: this.kind, plugin: this.plugin, desc: this.desc, args,
+             required: [...this.required], mutating: this.mutating, network: this.network,
+             danger: this.danger, deletes: this.deletes };
+  }
+}
+
+class Registry {
+  /* Flat name -> Tool. Components register here; the loop dispatches only from here. */
+  constructor(tools = {}) { this.tools = { ...tools }; }
+
+  get length() { return Object.keys(this.tools).length; }
+
+  add(spec) { this.tools[spec.name] = spec; return spec; }
+
+  remove(name) { const had = name in this.tools; delete this.tools[name]; return had; }
+
+  get(name) {
+    if (!(name in this.tools)) {
+      throw new UnknownTool(`no tool '${name}'. ${this.length} are registered; tools.list shows them`);
+    }
+    return this.tools[name];
+  }
+
+  has(name) { return name in this.tools; }
+
+  names(kind = null) {
+    return Object.values(this.tools).filter((t) => !kind || t.kind === kind).map((t) => t.name).sort();
+  }
+
+  brief(kind = null) { return this.names(kind).map((name) => this.tools[name].brief()); }
+}
+
+const defaultRegistry = new Registry();
+
+function tool(...rest) {
+  /* tool(name, desc, opts, fn) or tool(name, opts, fn) - the plug surface. */
+  const fn = rest.pop();
+  const [first, second, third] = rest;
+  const name = first || (fn && fn.name) || 'tool';
+  let desc = '', opts = {};
+  if (typeof second === 'string') { desc = second; opts = third || {}; }
+  else if (second && typeof second === 'object') { opts = second; }
+  if (typeof first === 'object' && first !== null) { opts = first; desc = opts.desc || ''; }
+  const spec = new Tool({
+    name: typeof first === 'string' ? name : (opts.name || name),
+    desc: desc || opts.desc || name, handler: fn, args: opts.args || {}, required: opts.required || [],
+    kind: opts.kind || 'tool', mutating: !!opts.mutating, network: !!opts.network,
+    danger: !!opts.danger, deletes: !!opts.deletes, plugin: opts.plugin || 'plugin',
+  });
+  (opts.registry || defaultRegistry).add(spec);
+  return spec;
+}
+
+/* In the browser a plugin is a function typed into the panel, not a file on disk. */
+function evalPlugin(source, registry) {
+  const made = [];
+  const local = (...rest) => {
+    const spec = tool(...rest);
+    spec.plugin = 'plugin';
+    registry.add(spec);
+    made.push(spec.name);
+    return spec;
+  };
+  try { new Function('tool', 'fs', `"use strict";\n${source}\n`)(local, VFS); }
+  catch (error) { return { loaded: [], errors: { plugin: `${error.name}: ${error.message}` } }; }
+  return { loaded: made, errors: {} };
+}
+
+// ---------------------------------------------------------------------------
+// control and guard rails - deny wins over allow, always
+// ---------------------------------------------------------------------------
+
+// The operator's own handles. A rule list must never be able to lock the person who
+// typed it out of the guardrails, so calls from these sources skip the gate for these
+// tools. Everything the model drives is enforced in full.
+const GUARDRAIL_TOOLS = ['policy.', 'confirm.'];
+const OPERATOR_SOURCES = ['panel', 'cli', 'operator'];
+
+class Policy {
+  constructor(options = {}) {
+    Object.assign(this, {
+      root: '/',
+      allow: [],
+      deny: ['agent.run', 'fs.delete', 'shell.*'],
+      confirm_required: ['fs.write', 'fs.edit', 'shell.run'],
+      forbidden_commands: ['rm -rf /', 'rm -rf ~', 'mkfs', 'dd if=', ':(){', 'sudo', 'shutdown', 'reboot',
+        'eval(', 'new Function', 'document.cookie', 'localStorage.clear'],
+      extra_dirs: [], max_steps: 12, max_tool_calls: 60, max_writes: 20, max_deletes: 2, max_seconds: 300,
+      allow_network: false, dry_run: false, granted: {}, calls: 0, writes: 0, deletes: 0, started_at: 0, blocks: [],
+    });
+    for (const [key, value] of Object.entries(options)) if (Object.hasOwn(this, key)) this[key] = value;
+    this.extra_dirs = (options.extra_dirs || []).map(String);
+  }
+
+  startRun() { this.calls = this.writes = this.deletes = 0; this.started_at = nowSeconds(); }
+
+  grant(name, repeats = false) { this.granted[name] = repeats ? -1 : 0; }
+
+  revoke(name) { const had = name in this.granted; delete this.granted[name]; return had; }
+
+  block(name, reason) { this.blocks.push({ tool: name, reason, at: nowSeconds() }); return [false, reason]; }
+
+  check(spec, args = {}, source = 'loop') {
+    const name = spec.name;
+    if (OPERATOR_SOURCES.includes(source) && GUARDRAIL_TOOLS.some((prefix) => name.startsWith(prefix))) {
+      return [true, ''];
+    }
+    for (const pattern of this.deny) {
+      if (fnmatch(name, pattern)) return this.block(name, `denied by guardrail rule '${pattern}'`);
+    }
+    if (this.allow.length && !matchesAny(name, this.allow)) {
+      return this.block(name, `not in the allow list ${JSON.stringify(this.allow)}`);
+    }
+    if (spec.network && !this.allow_network) {
+      return this.block(name, 'network tools are off (set policy.allow_network=True)');
+    }
+    const command = String((args || {}).cmd === undefined ? '' : args.cmd);
+    if (command) {
+      const hit = this.forbidden_commands.find((pattern) => command.includes(pattern));
+      if (hit) return this.block(name, `command pattern '${hit}' is forbidden`);
+    }
+    if (this.dry_run && spec.mutating) return this.block(name, 'dry-run refuses mutating tools');
+    if (this.confirm_required.includes(name)) {
+      const left = this.granted[name];
+      if (left === undefined) return this.block(name, `${name} needs approval: call confirm.grant(tool='${name}')`);
+      if (left === 0) delete this.granted[name];
+      else this.granted[name] = left - 1;
+    }
+    if (spec.mutating && this.calls >= this.max_tool_calls) {
+      return this.block(name, `tool-call budget ${this.max_tool_calls} already spent`);
+    }
+    try { this.charge(spec, args || {}); } catch (error) {
+      if (error instanceof SandboxError) return this.block(name, error.message);
+      throw error;
+    }
+    if (this.started_at && this.max_seconds && nowSeconds() - this.started_at > this.max_seconds) {
+      return this.block(name, `wall-clock limit ${this.max_seconds}s reached`);
+    }
+    this.calls += 1;
+    return [true, ''];
+  }
+
+  charge(spec, args) {
+    const bases = [this.root, ...this.extra_dirs.map(String)];
+    for (const key of PATH_KEYS) {
+      if (args[key] !== undefined && args[key] !== null && args[key] !== '') {
+        const target = resolvePath(args[key], this.root);
+        if (!bases.some((base) => under(target, resolvePath(base, '')))) {
+          throw new SandboxError(`arg ${key}='${args[key]}' escapes the sandbox ${this.root}`);
+        }
+      }
+    }
+    if (!spec.mutating) return;
+    if (spec.deletes) {
+      if (this.deletes >= this.max_deletes) throw new SandboxError(`delete budget ${this.max_deletes} already spent`);
+      this.deletes += 1;
+    } else {
+      if (this.writes >= this.max_writes) throw new SandboxError(`write budget ${this.max_writes} already spent`);
+      this.writes += 1;
+    }
+  }
+
+  set(changes) {
+    for (const [key, value] of Object.entries(changes || {})) {
+      if (!Object.hasOwn(this, key)) throw new ToolError(`no such policy knob '${key}'`);
+      this[key] = value;
+    }
+    return this.summary();
+  }
+
+  summary() {
+    return { root: this.root, allow: this.allow, deny: this.deny, confirm_required: this.confirm_required,
+             granted: this.granted, allow_network: this.allow_network, dry_run: this.dry_run,
+             max_steps: this.max_steps, max_tool_calls: this.max_tool_calls, max_writes: this.max_writes,
+             max_deletes: this.max_deletes, max_seconds: this.max_seconds,
+             used: { calls: this.calls, writes: this.writes, deletes: this.deletes }, blocked: this.blocks.length };
+  }
+
+  promptBlock() {
+    return `root=${this.root} | network=${this.allow_network ? 'on' : 'off'}`
+      + ` | dry_run=${this.dry_run ? 'on' : 'off'}`
+      + ` | denied=${this.deny.length ? this.deny.join(', ') : 'none'}`
+      + ` | needs approval=${this.confirm_required.length ? this.confirm_required.join(', ') : 'none'}`
+      + ` | left: ${Math.max(0, this.max_tool_calls - this.calls)} calls,`
+      + ` ${Math.max(0, this.max_writes - this.writes)} writes`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// hooks - an event bus whose handlers can also be tools
+// ---------------------------------------------------------------------------
+
+class Hooks {
+  constructor(registry = null) {
+    this.hooks = [];
+    this.fired = [];
+    this.registry = registry || defaultRegistry;
+  }
+
+  add(event, pattern = '*', call = null, toolName = '', name = '') {
+    if (!HOOK_EVENTS.includes(event)) {
+      throw new ToolError(`unknown hook event '${event}'; use ${HOOK_EVENTS.join(', ')}`);
+    }
+    if (toolName && !this.registry.has(toolName)) throw new ToolError(`hook target tool '${toolName}' is not registered`);
+    if (!call && !toolName) throw new ToolError('a hook needs either a callable or a registered tool');
+    const handler = call || (async (payload) => this.registry.tools[toolName].call({ payload }));
+    const hook = { name: name || toolName || `${event}:${pattern}`, event, pattern, tool: toolName, call: handler };
+    this.hooks.push(hook);
+    return hook;
+  }
+
+  remove(name) {
+    const before = this.hooks.length;
+    this.hooks = this.hooks.filter((hook) => hook.name !== name);
+    return before - this.hooks.length;
+  }
+
+  describe() { return this.hooks.map((h) => ({ name: h.name, event: h.event, pattern: h.pattern, tool: h.tool })); }
+
+  async emit(event, payload) {
+    const verdict = { block: false, reason: '', args: { ...(payload.args || {}) } };
+    for (const hook of this.hooks) {
+      if (hook.event !== event) continue;
+      if (!fnmatch(String(payload.tool || ''), hook.pattern)) continue;
+      let outcome;
+      try { outcome = await hook.call({ ...payload }); } catch (error) {
+        outcome = error instanceof Blocked ? { block: true, reason: error.message }
+          : { block: true, reason: `hook ${hook.name} raised ${error.name}: ${error.message}` };
+      }
+      this.fired.push({ event, hook: hook.name, tool: payload.tool, outcome: outcome || {}, at: nowSeconds() });
+      if (!outcome || typeof outcome !== 'object') continue;
+      if (outcome.block) {
+        verdict.block = true;
+        verdict.reason = (verdict.reason ? `${verdict.reason}; ` : '')
+          + String(outcome.reason || `blocked by ${hook.name}`);
+        if (event === 'pre_tool') return verdict;
+      } else if (event === 'pre_tool' && outcome.args && typeof outcome.args === 'object') {
+        verdict.args = { ...verdict.args, ...outcome.args };
+      }
+    }
+    return verdict;
+  }
+
+  register(reg) {
+    reg.add(new Tool({ name: 'hook.add', desc: 'attach a hook to an event; it can block a call or rewrite its args',
+                       args: { event: ['string', `one of ${HOOK_EVENTS.join(',')}`],
+                               pattern: ['string', 'fnmatch on the tool name'],
+                               tool: ['string', 'registered tool to run as the handler'], name: 'string' },
+                       required: ['event'], kind: 'hook', mutating: true,
+                       handler: async ({ event, pattern = '*', tool = '', name = '' }) => {
+                         const hook = this.add(event, pattern || '*', null, tool, name);
+                         return { attached: hook.name, event: hook.event, pattern: hook.pattern };
+                       } }));
+    reg.add(new Tool({ name: 'hook.list', desc: 'attached hooks', kind: 'hook', handler: async () => this.describe() }));
+    reg.add(new Tool({ name: 'hook.remove', desc: 'detach hooks by name', args: { name: 'string' },
+                       required: ['name'], kind: 'hook', mutating: true,
+                       handler: async ({ name }) => this.remove(name) }));
+    reg.add(new Tool({ name: 'hook.history', desc: 'recent firings with outcomes', args: { limit: 'integer' },
+                       kind: 'hook', handler: async ({ limit = 20 }) => this.fired.slice(-Number(limit)) }));
+  }
+}
+// ---------------------------------------------------------------------------
+// memory - durable notes that outlive one run (localStorage here)
+// ---------------------------------------------------------------------------
+
+const STORE = {
+  get(key) { try { return window.localStorage.getItem(key); } catch (error) { return STORECache[key] ?? null; } },
+  set(key, value) { try { window.localStorage.setItem(key, value); } catch (error) { STORECache[key] = value; } },
+  clear(key) { try { window.localStorage.removeItem(key); } catch (error) { delete STORECache[key]; } },
+};
+const STORECache = {};
+
+class Memory {
+  constructor(location = 'agent.html:memory', options = {}) {
+    this.path = location ? String(location) : null;
+    this.clock = options.clock || nowSeconds;
+    this.entries = [];
+    this.load();
+  }
+
+  load() {
+    if (!this.path) return 0;
+    const raw = STORE.get(this.path);
+    if (raw) {
+      try { const data = JSON.parse(raw); this.entries = Array.isArray(data) ? data : []; }
+      catch (error) { this.entries = []; }
+    }
+    return this.entries.length;
+  }
+
+  save() { if (this.path) STORE.set(this.path, JSON.stringify(this.entries)); }
+
+  write({ key, value = null, tags = '', kind = 'note' }) {
+    const existing = this.entries.find((entry) => entry.key === key);
+    const entry = { key, value, tags, kind, at: this.clock(), hits: existing ? existing.hits || 0 : 0 };
+    if (existing) Object.assign(existing, entry);
+    else this.entries.push(entry);
+    this.save();
+    return entry;
+  }
+
+  read({ key }) {
+    const entry = this.entries.find((row) => row.key === key);
+    if (!entry) throw new ToolError(`no memory entry '${key}'`);
+    entry.hits = (entry.hits || 0) + 1;
+    this.save();
+    return entry;
+  }
+
+  forget({ key }) {
+    const before = this.entries.length;
+    this.entries = this.entries.filter((entry) => entry.key !== key);
+    this.save();
+    return { forgotten: before - this.entries.length, left: this.entries.length };
+  }
+
+  search({ query = '', limit = 8, kind = '' } = {}) {
+    const words = String(query || '').toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+    const now = Math.max(1, Number(this.clock()));
+    const scored = [];
+    for (const entry of this.entries) {
+      if (kind && entry.kind !== kind) continue;
+      const haystack = `${entry.key} ${entry.tags || ''} ${entry.kind || ''} ${entry.value}`.toLowerCase();
+      const score = words.length ? words.reduce((total, word) => total + haystack.split(word).length - 1, 0) : 1;
+      if (score) scored.push({ entry, score: score + 0.5 * (entry.hits || 0) + Number(entry.at || 0) / now });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, Number(limit)).map((row) => row.entry);
+  }
+
+  notes({ limit = 6 } = {}) {
+    const recent = [...this.entries].sort((a, b) => Number(b.at || 0) - Number(a.at || 0)).slice(0, Number(limit));
+    return recent.reverse().map((entry) => `- ${entry.key} (${entry.kind || 'note'}): ${String(entry.value).slice(0, 200)}`).join(NL);
+  }
+
+  register(reg) {
+    reg.add(new Tool({ name: 'memory.write', desc: 'store a note under a key',
+                       args: { key: 'string', value: ['any', 'what to remember'], tags: 'string',
+                               kind: ['string', 'note|preference|fact|warning|chunk'] },
+                       required: ['key', 'value'], kind: 'memory', mutating: true,
+                       handler: async (kwargs) => this.write(kwargs) }));
+    reg.add(new Tool({ name: 'memory.search', desc: 'find notes by keyword',
+                       args: { query: 'string', limit: 'integer', kind: 'string' }, kind: 'memory',
+                       handler: async (kwargs) => this.search(kwargs) }));
+    reg.add(new Tool({ name: 'memory.read', desc: 'one note by key', args: { key: 'string' },
+                       required: ['key'], kind: 'memory', handler: async (kwargs) => this.read(kwargs) }));
+    reg.add(new Tool({ name: 'memory.list', desc: 'every note', kind: 'memory', handler: async () => this.entries }));
+    reg.add(new Tool({ name: 'memory.forget', desc: 'drop a note', args: { key: 'string' }, required: ['key'],
+                       kind: 'memory', mutating: true, handler: async (kwargs) => this.forget(kwargs) }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// context - the window the model actually sees
+// ---------------------------------------------------------------------------
+
+class Context {
+  constructor(options = {}) {
+    this.budget_tokens = Math.trunc(options.budget_tokens || 4000);
+    this.keep_last = Math.trunc(options.keep_last === undefined ? 6 : options.keep_last);
+    this.system = '';
+    this.messages = [];
+    this.compactions = 0;
+  }
+
+  reset(system = '') { this.system = system; this.messages = []; }
+
+  push(role, content, name = '') {
+    const text = typeof content === 'string' ? content : JSON.stringify(content ?? null);
+    const message = { role, content: text, name, tokens: estimateTokens(text) };
+    this.messages.push(message);
+    return message;
+  }
+
+  stats() {
+    const used = this.messages.reduce((total, message) => total + message.tokens, 0) + estimateTokens(this.system);
+    return { messages: this.messages.length, tokens: used, budget: this.budget_tokens,
+             used_pct: Math.round((100 * used) / Math.max(1, this.budget_tokens) * 10) / 10,
+             over: used > this.budget_tokens, compactions: this.compactions };
+  }
+
+  needsCompaction() { return this.stats().over; }
+
+  asMessages() {
+    const out = this.system ? [{ role: 'system', content: this.system }] : [];
+    for (const message of this.messages) {
+      const entry = { role: message.role, content: message.content };
+      if (message.name) entry.name = message.name;
+      out.push(entry);
+    }
+    return out;
+  }
+
+  compact(summary = null) {
+    const before = this.stats().tokens;
+    if (this.messages.length <= this.keep_last + 1) return { compacted: false, reason: 'nothing old enough to fold', tokens: before };
+    const old = this.messages.slice(0, this.messages.length - this.keep_last);
+    if (summary === null || summary === undefined) {
+      summary = old.map((m) => `${m.name || m.role}: ${m.content.slice(0, 70)}`).join(' | ');
+    }
+    const folded = [{ role: 'system', content: `[summary of ${old.length} earlier turns] ${summary}`,
+                      name: 'compact', tokens: estimateTokens(summary) }];
+    this.messages = [...folded, ...this.messages.slice(old.length)];
+    this.compactions += 1;
+    return { compacted: true, folded: old.length, before, after: this.stats().tokens };
+  }
+
+  register(reg) {
+    reg.add(new Tool({ name: 'context.stats', desc: 'window usage: tokens, messages, budget', kind: 'context',
+                       handler: async () => this.stats() }));
+    reg.add(new Tool({ name: 'context.read', desc: 'the transcript the model would see', args: { limit: 'integer' },
+                       kind: 'context', handler: async ({ limit = 30 }) => this.messages.slice(-Number(limit)) }));
+    reg.add(new Tool({ name: 'context.push', desc: 'add a message to the transcript',
+                       args: { role: ['string', 'user|assistant|tool'], content: 'string', name: 'string' },
+                       required: ['role', 'content'], kind: 'context', mutating: true,
+                       handler: async ({ role, content, name = '' }) => this.push(role, content, name) }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// prompts - layered system prompt assembly
+// ---------------------------------------------------------------------------
+
+const BASE_PROMPT = `You are the {name} harness agent, a loop that acts only through tools.
+
+Reply with ONE JSON object and nothing else:
+  {{"thought": "<one line>", "call": {{"tool": "<name>", "args": {{...}}}}}}
+  {{"thought": "<one line>", "final": "<answer to the goal>"}}
+
+Use only tools from the list. Read before you write. If a call is blocked by a
+guardrail, do not fight it: route around it or explain the block in "final".`;
+
+const PERSONA_PROMPT = 'Style: terse and concrete. Never invent a path or a tool name. Quote the output that decided something.';
+
+class Prompts {
+  constructor(layers = null) {
+    this.layers = { base: BASE_PROMPT, persona: PERSONA_PROMPT, goal: '', guardrails: '', skills: '', memory: '', tools: '' };
+    this.dynamic = [];
+    Object.assign(this.layers, layers || {});
+  }
+
+  set({ layer, text }) {
+    if (!(layer in this.layers)) throw new ToolError(`unknown prompt layer '${layer}'; layers are ${Object.keys(this.layers).join(', ')}`);
+    this.layers[layer] = text;
+    return { layer, tokens: estimateTokens(text) };
+  }
+
+  attach(layer, producer) {
+    if (!(layer in this.layers)) this.layers[layer] = '';
+    this.dynamic.push([layer, producer]);
+    return { layer, dynamic: true };
+  }
+
+  render(agent) {
+    for (const [layer, producer] of this.dynamic) this.layers[layer] = String(producer() || '');
+    this.layers.memory = agent.memory.notes();
+    this.layers.skills = agent.skills.promptBlock();
+    this.layers.guardrails = agent.policy.promptBlock();
+    this.layers.tools = agent.toolPrompt();
+    const fixed = ['base', 'persona', 'goal', 'guardrails', 'skills', 'memory', 'tools'];
+    const order = fixed.concat(Object.keys(this.layers).filter((key) => !fixed.includes(key)));
+    const parts = [this.layers.base.split('{name}').join(agent.name)];
+    for (const key of order.slice(1)) {
+      const text = this.layers[key];
+      if (text) parts.push(key === 'persona' ? text : `# ${key}\n${text}`);
+    }
+    return parts.filter((part) => String(part).trim()).join('\n\n');
+  }
+
+  register(reg, agent) {
+    const get = async ({ rendered = false } = {}) => {
+      const out = { layers: Object.fromEntries(Object.entries(this.layers)
+        .map(([key, value]) => [key, String(value).length > 400 ? `${String(value).slice(0, 400)}...` : value])),
+                   dynamic: this.dynamic.map(([layer]) => layer) };
+      if (rendered) { out.rendered = this.render(agent); out.tokens = estimateTokens(out.rendered); }
+      return out;
+    };
+    reg.add(new Tool({ name: 'prompt.get', desc: 'the prompt layers, and the rendered system prompt on request',
+                       args: { rendered: ['boolean', 'include the assembled text'] }, kind: 'prompt', handler: get }));
+    reg.add(new Tool({ name: 'prompt.set', desc: 'replace one layer (base|persona|goal|guardrails|skills|memory|tools)',
+                       args: { layer: 'string', text: 'string' }, required: ['layer', 'text'], kind: 'prompt',
+                       mutating: true, handler: async (kwargs) => this.set(kwargs) }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// skills - instruction packs written in markdown, stored in the browser
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SKILL = `---\nname: notekeeper\ndescription: keep a running note file\ntools: fs.read, fs.write, nope.tool\n---\nRead notes.md first.\nIf it is missing, write it with one heading and three words.\nNever delete a file; ask instead.\n`;
+
+class Skills {
+  constructor(storeKey = 'agent.html:skills', options = {}) {
+    this.storeKey = storeKey ? String(storeKey) : null;
+    this.registry = options.registry || defaultRegistry;
+    this.packs = {};
+    this.active = [];
+    this.scan();
+  }
+
+  sources() {
+    const stored = {};
+    if (this.storeKey) {
+      const raw = STORE.get(this.storeKey);
+      if (raw) { try { Object.assign(stored, JSON.parse(raw) || {}); } catch (error) { /* keep defaults */ } }
+    }
+    if (!Object.keys(stored).length) stored['notekeeper.md'] = DEFAULT_SKILL;
+    return stored;
+  }
+
+  scan() {
+    const found = [];
+    for (const [file, raw] of Object.entries(this.sources()).sort()) {
+      const pack = this.parse(raw, file);
+      if (pack && pack.name) { this.packs[pack.name] = pack; found.push(pack.name); }
+    }
+    return found;
+  }
+
+  parse(raw, file) {
+    const match = String(raw).match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n([\s\S]*)$/);
+    const meta = match ? match[1] : '';
+    const body = (match ? match[2] : raw).trim();
+    const fields = {};
+    for (const line of meta.split(/\r?\n/)) {
+      const index = line.indexOf(':');
+      if (index === -1) continue;
+      fields[line.slice(0, index).trim()] = line.slice(index + 1).trim().replace(/^["']|["']$/g, '');
+    }
+    return { name: fields.name || String(file).replace(/\.md$/, ''), description: fields.description || '',
+             when: fields.when_to_use || fields.when || '',
+             tools: (fields.tools || '').split(',').map((item) => item.trim()).filter(Boolean),
+             body, file };
+  }
+
+  list() {
+    return Object.values(this.packs).map((pack) => ({ name: pack.name, description: pack.description, when: pack.when,
+                                                     tools: pack.tools, active: this.active.includes(pack.name) }));
+  }
+
+  pack(name) {
+    if (!(name in this.packs)) {
+      throw new ToolError(`no skill '${name}'; ${Object.keys(this.packs).length} installed: `
+        + `${Object.keys(this.packs).join(', ') || 'none'}`);
+    }
+    return this.packs[name];
+  }
+
+  use({ name }) {
+    const pack = this.pack(name);
+    if (!this.active.includes(name)) this.active.push(name);
+    return { active: [...this.active], requires: pack.tools,
+             missing_tools: pack.tools.filter((toolName) => !this.registry.has(toolName)) };
+  }
+
+  stop({ name }) { this.active = this.active.filter((item) => item !== name); return { active: [...this.active] }; }
+
+  addPack(name, text) {
+    const stored = this.sources();
+    stored[`${name}.md`] = text;
+    STORE.set(this.storeKey, JSON.stringify(stored));
+    this.packs = {};
+    return this.scan();
+  }
+
+  promptBlock() {
+    return this.active.filter((name) => name in this.packs)
+      .map((name) => `## skill: ${name}\n${this.packs[name].body}`).join('\n\n');
+  }
+
+  register(reg) {
+    reg.add(new Tool({ name: 'skills.list', desc: 'installed skill packs', kind: 'skill', handler: async () => this.list() }));
+    reg.add(new Tool({ name: 'skills.read', desc: "a skill's full instructions", args: { name: 'string' },
+                       required: ['name'], kind: 'skill', handler: async ({ name }) => this.pack(name).body }));
+    reg.add(new Tool({ name: 'skills.use', desc: 'activate a skill; its body joins the system prompt',
+                       args: { name: 'string' }, required: ['name'], kind: 'skill', mutating: true,
+                       handler: async (kwargs) => this.use(kwargs) }));
+    reg.add(new Tool({ name: 'skills.stop', desc: 'deactivate a skill', args: { name: 'string' }, required: ['name'],
+                       kind: 'skill', mutating: true, handler: async (kwargs) => this.stop(kwargs) }));
+    reg.add(new Tool({ name: 'skills.scan', desc: 're-read the skill packs', kind: 'skill', mutating: true,
+                       handler: async () => ({ found: this.scan() }) }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// tasks and scheduler
+// ---------------------------------------------------------------------------
+
+class Tasks {
+  constructor(options = {}) {
+    this.items = [];
+    this.clock = options.clock || nowSeconds;
+    this.next = 1;
+  }
+
+  create({ subject, description = '', status = 'pending', blocks = '' }) {
+    const task = { id: this.next, subject, description, status,
+                   blocked_by: (String(blocks).match(/\d+/g) || []).map(Number), at: this.clock(), history: [status] };
+    this.next += 1;
+    this.items.push(task);
+    return task;
+  }
+
+  get({ id }) {
+    const task = this.items.find((item) => item.id === Number(id));
+    if (!task) throw new ToolError(`no task ${id}`);
+    return task;
+  }
+
+  update({ id, status = '', subject = '', description = '' }) {
+    const task = this.get({ id });
+    if (status) {
+      if (!TASK_STATUSES.includes(status)) throw new ToolError(`bad task status '${status}'; use ${TASK_STATUSES.join(', ')}`);
+      task.status = status;
+      task.history.push(status);
+    }
+    if (subject) task.subject = subject;
+    if (description) task.description = description;
+    return task;
+  }
+
+  ready() {
+    const done = new Set(this.items.filter((task) => task.status === 'completed').map((task) => task.id));
+    return this.items.filter((task) => task.status === 'pending' && task.blocked_by.every((id) => done.has(id)));
+  }
+
+  summary() {
+    const counts = {};
+    for (const task of this.items) counts[task.status] = (counts[task.status] || 0) + 1;
+    return { tasks: this.items.length, ...counts, ready: this.ready().map((task) => task.subject) };
+  }
+
+  register(reg) {
+    reg.add(new Tool({ name: 'task.create', desc: 'track a unit of work',
+                       args: { subject: 'string', description: 'string', status: 'string',
+                               blocks: ['string', 'comma separated task ids this waits on'] },
+                       required: ['subject'], kind: 'task', mutating: true,
+                       handler: async (kwargs) => this.create(kwargs) }));
+    reg.add(new Tool({ name: 'task.list', desc: 'every task plus status counts', kind: 'task',
+                       handler: async () => ({ items: this.items, ...this.summary() }) }));
+    reg.add(new Tool({ name: 'task.get', desc: 'one task', args: { id: 'integer' }, required: ['id'], kind: 'task',
+                       handler: async (kwargs) => this.get(kwargs) }));
+    reg.add(new Tool({ name: 'task.update', desc: "change a task's status or text",
+                       args: { id: 'integer', status: 'string', subject: 'string', description: 'string' },
+                       required: ['id'], kind: 'task', mutating: true, handler: async (kwargs) => this.update(kwargs) }));
+    reg.add(new Tool({ name: 'task.ready', desc: 'tasks with no unfinished blockers', kind: 'task',
+                       handler: async () => this.ready() }));
+  }
+}
+
+class Scheduler {
+  /* Interval/at jobs. A job is a tool call through the same funnel - nothing else. */
+  constructor(options = {}) {
+    this.clock = options.clock || nowSeconds;
+    this.jobs = [];
+    this.fired = [];
+  }
+
+  add({ name, tool: toolName = '', args = null, every = 0, at = 0, max_runs: maxRuns = 0 }) {
+    if (!toolName) throw new ToolError('a scheduled job must name a tool to call');
+    if (!every && !at) throw new ToolError('give either every=<seconds> or at=<epoch>');
+    const job = { name, tool: toolName, args: args || {}, every: Number(every || 0), at: Number(at || 0),
+                  max_runs: Math.trunc(maxRuns || 0), runs: 0, last: 0,
+                  next: at ? Number(at) : this.clock() + Number(every) };
+    this.jobs = this.jobs.filter((row) => row.name !== name).concat([job]);
+    return job;
+  }
+
+  due(now = null) {
+    const at = now === null ? Number(this.clock()) : Number(now);
+    return this.jobs.filter((job) => job.next && job.runs < (job.max_runs || Number.MAX_SAFE_INTEGER) && job.next <= at);
+  }
+
+  async tick(dispatch, now = null) {
+    const at = now === null ? Number(this.clock()) : Number(now);
+    const results = [];
+    for (const job of this.due(at)) {
+      const outcome = { job: job.name, tool: job.tool, at };
+      try { outcome.result = await dispatch(job.tool, job.args); }
+      catch (error) { outcome.error = `${error.name}: ${error.message}`; }
+      job.runs += 1;
+      job.last = at;
+      job.next = job.every ? at + job.every : 0;
+      this.fired.push(outcome);
+      results.push(outcome);
+    }
+    return results;
+  }
+
+  remove({ name }) {
+    const before = this.jobs.length;
+    this.jobs = this.jobs.filter((job) => job.name !== name);
+    return { removed: before - this.jobs.length, left: this.jobs.length };
+  }
+
+  register(reg) {
+    reg.add(new Tool({ name: 'schedule.add', desc: 'run a tool every N seconds or at an epoch time',
+                       args: { name: 'string', tool: 'string', args: 'object',
+                               every: ['number', 'seconds between runs'], at: ['number', 'epoch fire time'],
+                               max_runs: 'integer' },
+                       required: ['name', 'tool'], kind: 'schedule', mutating: true,
+                       handler: async (kwargs) => this.add(kwargs) }));
+    reg.add(new Tool({ name: 'schedule.list', desc: 'jobs with their next fire times', kind: 'schedule',
+                       handler: async () => ({ jobs: this.jobs, fired: this.fired.slice(-10) }) }));
+    reg.add(new Tool({ name: 'schedule.due', desc: 'jobs that are due right now', kind: 'schedule',
+                       handler: async () => this.due() }));
+    reg.add(new Tool({ name: 'schedule.remove', desc: 'drop a job by name', args: { name: 'string' },
+                       required: ['name'], kind: 'schedule', mutating: true,
+                       handler: async (kwargs) => this.remove(kwargs) }));
+  }
+}
+// ---------------------------------------------------------------------------
+// models — the brain is pluggable and callable: model.* are ordinary tools
+// ---------------------------------------------------------------------------
+
+const ENDPOINTS = { AGENT_TIMEOUT: '', OLLAMA_HOST: 'http://127.0.0.1:11434', OLLAMA_MODEL: 'qwen3:8b',
+                    OPENAI_BASE_URL: 'http://127.0.0.1:11434/v1', OPENAI_MODEL: 'qwen3:8b', OPENAI_API_KEY: 'ollama',
+                    LLAMACPP_URL: 'http://127.0.0.1:8080' };
+
+async function httpJson(url, payload, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Number(options.timeout || 60) * 1000);
+  const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
+  let text, status;
+  try {
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+    text = await response.text();
+    status = response.status;
+  } catch (error) {
+    clearTimeout(timer);
+    throw new ToolError(`${url} unreachable: ${error.message}`);
+  }
+  clearTimeout(timer);
+  if (status >= 400) throw new ToolError(`${url} answered ${status}: ${text.slice(0, 200)}`);
+  try { return JSON.parse(text); } catch (error) { throw new ToolError(`${url} returned non-JSON: ${text.slice(0, 200)}`); }
+}
+
+const chatmlToken = (label) => String.fromCharCode(60) + '|' + label + '|' + String.fromCharCode(62);
+const CHATML_START = chatmlToken('start');
+const CHATML_MESSAGE = chatmlToken('message');
+const CHATML_END = chatmlToken('end');
+// both turn terminators are stop tokens: a model emits whichever its own template used
+const CHATML_STOPS = [CHATML_END, chatmlToken('im_end')];
+
+/* llama.cpp /completion takes a raw prompt; most GGUFs are trained on ChatML.
+   llama.cpp's own template is START+role+MESSAGE+content+END per turn, then an open
+   START+assistant+MESSAGE for the reply. chatmlToken keeps the control sequences out of
+   the source so this file stays safe to paste into a chat. */
+const renderChatml = (messages) => messages.map((m) => `${CHATML_START}${m.role || 'user'}${CHATML_MESSAGE}${m.content || ''}${CHATML_END}`).join('')
+  + `${CHATML_START}assistant${CHATML_MESSAGE}`;
+
+class Models {
+  constructor(options = {}) {
+    this.registry = options.registry || defaultRegistry;
+    this.env = options.env || ENDPOINTS;
+    this.scripts = {};
+    this.turns = {};
+    this.log = [];
+    this.manual = options.manual || null;      /* returns the action the human typed */
+    if (options.scripted) this.scripts.default = [...options.scripted];
+  }
+
+  timeoutFor(fallback) { return Number(this.env.AGENT_TIMEOUT || fallback); }
+
+  script({ script = 'default', turns = null, append = false }) {
+    const rows = typeof turns === 'string' ? JSON.parse(turns) : (turns || []);
+    this.scripts[script] = append ? [...(this.scripts[script] || []), ...rows] : [...rows];
+    delete this.turns[script];
+    return { script, turns: this.scripts[script].length };
+  }
+
+  scripted({ messages = null, tools = null, goal = '', step = 0, script = 'default' } = {}) {
+    const queue = this.scripts[script] || (this.scripts[script] = []);
+    const index = this.turns[script] || 0;
+    this.turns[script] = index + 1;
+    this.log.push({ model: 'scripted', script, step, tools: (tools || []).length });
+    if (index < queue.length) return { ...queue[index] };
+    return { thought: 'script exhausted', final: `(script '${script}' ran out after ${index} turns; goal=${String(goal).slice(0, 60)})` };
+  }
+
+  manualNext({ messages = null, tools = null, goal = '', step = 0 } = {}) {
+    /* Drive the loop by hand: whatever is in the "next action" box, or nothing at all. */
+    this.log.push({ model: 'manual', script: 'typed', step, tools: (tools || []).length });
+    const action = this.manual ? this.manual() : null;
+    if (!action) throw new ToolError('model.manual has no queued action: type one in the console and press step');
+    return { ...action };
+  }
+
+  async ollama({ messages = null, tools = null, goal = '', step = 0, model = '', url = '', format = 'json', temperature = 0.2 } = {}) {
+    const base = url || this.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
+    const payload = { model: model || this.env.OLLAMA_MODEL || 'qwen3:8b', messages: messages || [], stream: false, format,
+                      options: { temperature: Number(temperature), num_ctx: 8192 } };
+    if (tools && tools.length) payload.tools = tools.filter((name) => this.registry.has(name)).map((name) => this.registry.tools[name].openaiSpec());
+    const data = await httpJson(`${base.replace(/\/+$/, '')}/api/chat`, payload, { timeout: this.timeoutFor(120) });
+    const content = (data.message || {}).content || data.response || '';
+    return this.actionFrom(content, (data.message || {}).tool_calls);
+  }
+
+  async openai({ messages = null, tools = null, goal = '', step = 0, model = '', base_url: baseUrl = '', api_key: apiKey = '' } = {}) {
+    const base = baseUrl || this.env.OPENAI_BASE_URL || 'http://127.0.0.1:11434/v1';
+    const key = apiKey || this.env.OPENAI_API_KEY || 'ollama';
+    const specs = (tools || []).filter((name) => this.registry.has(name)).map((name) => this.registry.tools[name].openaiSpec());
+    const payload = { model: model || this.env.OPENAI_MODEL || 'qwen3:8b', messages: messages || [], temperature: 0.2, tool_choice: 'auto' };
+    if (specs.length) payload.tools = specs;
+    const data = await httpJson(`${base.replace(/\/+$/, '')}/chat/completions`, payload,
+                                { timeout: this.timeoutFor(120), headers: { authorization: `Bearer ${key}` } });
+    const choice = ((data.choices || [])[0] || {}).message;
+    if (!choice) throw new ToolError(`unexpected reply: ${JSON.stringify(data).slice(0, 300)}`);
+    return this.actionFrom(choice.content || '', choice.tool_calls);
+  }
+
+  async llamacpp({ messages = null, tools = null, goal = '', step = 0, base_url: baseUrl = '', model = '',
+                   temperature = 0.1, n_predict: nPredict = 400 } = {}) {
+    const base = baseUrl || this.env.LLAMACPP_URL || 'http://127.0.0.1:8080';
+    const toolList = (tools || []).filter((name) => this.registry.has(name))
+      .map((name) => `- ${name}: ${this.registry.tools[name].desc}`).join(NL);
+    const prompt = renderChatml([{ role: 'system', content: (messages || [{}])[0].content || '' },
+                                 { role: 'user', content: `Tools:${NL}${toolList}${NL}Goal: ${goal}` }]);
+    const payload = { prompt, temperature: Number(temperature), n_predict: Math.trunc(nPredict), stream: false,
+                      no_generation: false, stop: CHATML_STOPS,
+                      json_schema: JSON.stringify({ type: 'object', properties: {
+                        thought: { type: 'string' },
+                        call: { type: 'object', properties: { tool: { enum: tools || [] }, args: { type: 'object' } } },
+                        final: { type: 'string' } }, required: ['thought'] }) };
+    // a router-mode llama-server hosts several models and cannot guess which one
+    if (model) payload.model = model;
+    const data = await httpJson(`${base.replace(/\/+$/, '')}/completion`, payload, { timeout: this.timeoutFor(180) });
+    let raw = data.content || data.generation || '';
+    for (const stop of CHATML_STOPS) raw = raw.split(stop)[0];
+    return this.actionFrom(raw);
+  }
+
+  actionFrom(content, toolCalls = null) {
+    if (toolCalls && toolCalls.length) {
+      const call = toolCalls[0].function || {};
+      const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : (call.arguments || {});
+      return { thought: content || call.name || '', call: { tool: call.name || '', args } };
+    }
+    const action = firstJson(content);
+    if (!action) throw new ToolError(`model did not return the action contract: ${JSON.stringify(String(content).slice(0, 200))}`);
+    if ('action' in action && !('call' in action)) { action.call = action.action; delete action.action; }
+    return action;
+  }
+
+  register(reg) {
+    const common = { messages: ['array', 'transcript'], tools: ['array', 'tool names the model may call'],
+                     goal: ['string', 'what the run is for'], step: ['integer', 'turn index'] };
+    reg.add(new Tool({ name: 'model.scripted', desc: 'offline deterministic model: replays a queued script of actions',
+                       args: { ...common, script: ['string', 'named script queue'] }, kind: 'model',
+                       handler: async (kwargs) => this.scripted(kwargs) }));
+    reg.add(new Tool({ name: 'model.set_script', desc: 'queue the actions model.scripted should return',
+                       args: { script: 'string', turns: 'array', append: ['boolean', 'add to the queue instead of replacing'] },
+                       required: ['turns'], kind: 'model', mutating: true, handler: async (kwargs) => this.script(kwargs) }));
+    reg.add(new Tool({ name: 'model.manual', desc: 'you are the model: the action typed into the console is returned',
+                       args: { ...common }, kind: 'model', handler: async (kwargs) => this.manualNext(kwargs) }));
+    reg.add(new Tool({ name: 'model.ollama', desc: 'Ollama /api/chat as the decision maker',
+                       args: { ...common, model: 'string', url: 'string', format: 'string', temperature: 'number' },
+                       kind: 'model', network: true, handler: (kwargs) => this.ollama(kwargs) }));
+    reg.add(new Tool({ name: 'model.openai', desc: 'any OpenAI-compatible /chat/completions as the decision maker',
+                       args: { ...common, model: 'string', base_url: 'string', api_key: 'string' },
+                       kind: 'model', network: true, handler: (kwargs) => this.openai(kwargs) }));
+    reg.add(new Tool({ name: 'model.llamacpp', desc: 'llama.cpp server /completion with json_schema as the decision maker',
+                       args: { ...common, base_url: 'string', model: 'string', temperature: 'number', n_predict: 'integer' },
+                       kind: 'model', network: true, handler: (kwargs) => this.llamacpp(kwargs) }));
+    reg.add(new Tool({ name: 'model.log', desc: 'recent model calls: which endpoint, how many tools offered',
+                       args: { limit: 'integer' }, kind: 'model',
+                       handler: async ({ limit = 20 }) => this.log.slice(-Number(limit)) }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// built-in tools — fs.* runs against a virtual filesystem, so nothing is written
+// ---------------------------------------------------------------------------
+
+const VFSSeed = {
+  '/notes.md': '# notes\nalpha beta gamma delta',
+  '/secret.txt': 'do not read',
+  '/data/rows.csv': 'a,b,c\n1,2,3\n',
+};
+const VFS = { ...VFSSeed };
+
+class Builtins {
+  constructor(root = '/', options = {}) {
+    this.root = resolvePath(root, '');
+    this.clock = options.clock || nowSeconds;
+  }
+
+  targetPath(value) { return resolvePath(value, this.root); }
+
+  async fetchPage(url, timeout = 20, maxBytes = 20000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Number(timeout) * 1000);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      return { url, status: response.status, body: (await response.text()).slice(0, Math.trunc(maxBytes)) };
+    } catch (error) {
+      throw new ToolError(`${url} unreachable: ${error.message}`);
+    } finally { clearTimeout(timer); }
+  }
+
+  register(reg) {
+    const root = this.root;
+    reg.add(new Tool({ name: 'fs.read', desc: 'read a text file inside the sandbox',
+                       args: { path: 'string', max_bytes: 'integer' }, required: ['path'], kind: 'tool', plugin: 'builtins',
+                       handler: async ({ path: wanted, max_bytes: maxBytes = 20000 }) => {
+                         const target = this.targetPath(wanted);
+                         if (!(target in VFS)) throw new ToolError(`${wanted} is not a file under ${root}`);
+                         const content = String(VFS[target]);
+                         return { path: target, bytes: content.length, content: content.slice(0, Math.trunc(maxBytes)) };
+                       } }));
+    reg.add(new Tool({ name: 'fs.write', desc: 'write or append a file inside the sandbox',
+                       args: { path: 'string', content: 'string', append: 'boolean' }, required: ['path'],
+                       kind: 'tool', mutating: true, plugin: 'builtins',
+                       handler: async ({ path: wanted, content = '', append = false }) => {
+                         const target = this.targetPath(wanted);
+                         const text = String(content);
+                         VFS[target] = append && target in VFS ? `${VFS[target]}\n${text}` : text;
+                         return { path: target, bytes: VFS[target].length, mode: append ? 'append' : 'write' };
+                       } }));
+    reg.add(new Tool({ name: 'fs.edit', desc: 'replace text inside a file; a second match needs all=true',
+                       args: { path: 'string', find: 'string', replace: 'string', all: 'boolean' },
+                       required: ['path', 'find', 'replace'], kind: 'tool', mutating: true, plugin: 'builtins',
+                       handler: async ({ path: wanted, find, replace = '', all = false }) => {
+                         const target = this.targetPath(wanted);
+                         if (!(target in VFS)) throw new ToolError(`${wanted} is not a file under ${root}`);
+                         const content = String(VFS[target]);
+                         const needle = String(find);
+                         const hits = content.split(needle).length - 1;
+                         if (!hits) throw new ToolError(`no match for ${needle.slice(0, 40)} in ${wanted}`);
+                         if (!all && hits > 1) {
+                           throw new ToolError(`${needle.slice(0, 40)} matches ${hits} times in ${wanted};`
+                             + ' widen it, or pass all=true');
+                         }
+                         VFS[target] = all ? content.split(needle).join(String(replace))
+                                           : content.replace(needle, () => String(replace));
+                         return { path: target, bytes: VFS[target].length,
+                                  replacements: all ? hits : 1, matches: hits };
+                       } }));
+    reg.add(new Tool({ name: 'fs.list', desc: 'list a directory', args: { path: 'string', pattern: 'string' },
+                       kind: 'tool', plugin: 'builtins',
+                       handler: async ({ path: wanted = '.', pattern = '*' }) => {
+                         const target = this.targetPath(wanted);
+                         const matcher = pattern === '*' ? null : globToRegExp(pattern);
+                         const entries = {};
+                         for (const [file, content] of Object.entries(VFS)) {
+                           if (!under(file, resolvePath(target, '')) || file === target) continue;
+                           const rest = file.slice(target === '/' ? 1 : target.length + 1);
+                           const head = rest.split('/')[0];
+                           if (matcher && !matcher.test(head)) continue;
+                           if (rest === head) entries[head] = { name: head, dir: false, bytes: content.length };
+                           else entries[head] = { name: head, dir: true, bytes: 0 };
+                         }
+                         return { path: target, entries: Object.values(entries).sort((a, b) => a.name.localeCompare(b.name)) };
+                       } }));
+    reg.add(new Tool({ name: 'fs.exists', desc: 'does this path exist?', args: { path: 'string' }, required: ['path'],
+                       kind: 'tool', plugin: 'builtins',
+                       handler: async ({ path: wanted }) => {
+                         const target = this.targetPath(wanted);
+                         const file = target in VFS;
+                         const dir = Object.keys(VFS).some((name) => name.length > target.length
+                           && under(name, resolvePath(target, '')));
+                         return { path: target, exists: file || dir, dir, file };
+                       } }));
+    reg.add(new Tool({ name: 'fs.delete', desc: 'remove one file (only this tab forgets)', args: { path: 'string' },
+                       required: ['path'], kind: 'tool', mutating: true, danger: true, deletes: true, plugin: 'builtins',
+                       handler: async ({ path: wanted }) => {
+                         const target = this.targetPath(wanted);
+                         if (!(target in VFS)) throw new ToolError(`${wanted} does not exist`);
+                         delete VFS[target];
+                         return { deleted: target };
+                       } }));
+    reg.add(new Tool({ name: 'shell.run', desc: 'run a program with argv; no shell interpolation',
+                       args: { cmd: 'string', timeout: 'number' }, required: ['cmd'], kind: 'tool',
+                       mutating: true, danger: true, plugin: 'builtins',
+                       handler: async ({ cmd }) => virtualShell(cmd, root) }));
+    reg.add(new Tool({ name: 'http.get', desc: 'fetch a URL', args: { url: 'string', timeout: 'number', max_bytes: 'integer' },
+                       required: ['url'], kind: 'tool', network: true, plugin: 'builtins',
+                       handler: async ({ url, timeout = 20, max_bytes: maxBytes = 20000 }) => this.fetchPage(url, timeout, maxBytes) }));
+    reg.add(new Tool({ name: 'browser.open', desc: 'fetch a URL and reduce it to title, text and links',
+                       args: { url: 'string', timeout: 'number', max_bytes: 'integer' }, required: ['url'],
+                       kind: 'tool', network: true, plugin: 'builtins',
+                       handler: async ({ url, timeout = 20, max_bytes: maxBytes = 40000 }) => {
+                         const page = await this.fetchPage(url, timeout, maxBytes);
+                         return { url: page.url, status: page.status, ...htmlReduce(page.body) };
+                       } }));
+    reg.add(new Tool({ name: 'time.now', desc: 'current epoch seconds', kind: 'tool', plugin: 'builtins',
+                       handler: async () => ({ now: this.clock() }) }));
+    reg.add(new Tool({ name: 'echo', desc: 'return its argument - the hello-world plug', args: { text: 'string' },
+                       required: ['text'], kind: 'tool', plugin: 'builtins',
+                       handler: async ({ text }) => ({ echo: text }) }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the loop — one funnel, repeated: registry -> hooks -> policy -> handler -> hooks -> context
+// ---------------------------------------------------------------------------
+
+class Call {
+  constructor(fields = {}) {
+    Object.assign(this, { tool: '', kind: 'tool', plugin: 'core', args: {}, ok: false, value: null, error: '',
+                          blocked: false, reason: '', source: 'loop', ms: 0 }, fields);
+  }
+
+  observation() {
+    if (this.blocked) return { blocked: true, tool: this.tool, reason: this.reason };
+    if (!this.ok) return { error: this.error, tool: this.tool };
+    return { tool: this.tool, result: this.value };
+  }
+
+  brief() { return { ...this }; }
+}
+
+class Turn {
+  constructor(i, fields = {}) {
+    Object.assign(this, { i, thought: '', action: {}, call: null, final: '' }, fields);
+  }
+
+  brief() {
+    return { i: this.i, thought: this.thought, tool: this.call ? this.call.tool : '',
+             ok: this.call ? this.call.ok : null, blocked: this.call ? this.call.blocked : null,
+             final: this.final, action: this.action };
+  }
+}
+
+class Run {
+  constructor(goal, model, fields = {}) {
+    Object.assign(this, { goal, model, status: 'running', turns: [], started: 0, seconds: 0,
+                          memory_writes: 0, tasks_created: 0, compactions: 0, error: '' }, fields);
+  }
+
+  get trail() { return this.turns.filter((turn) => turn.call).map((turn) => turn.call.tool).join(' -> '); }
+
+  get blocked() {
+    return this.turns.filter((turn) => turn.call && turn.call.blocked)
+      .map((turn) => ({ i: turn.i, tool: turn.call.tool, reason: turn.call.reason }));
+  }
+
+  get answer() {
+    for (let index = this.turns.length - 1; index >= 0; index -= 1) {
+      if (this.turns[index].final) return this.turns[index].final;
+    }
+    return '';
+  }
+
+  get ok() { return this.status === 'done'; }
+
+  brief() {
+    return { status: this.status, goal: this.goal, model: this.model, answer: this.answer, trail: this.trail,
+             turns: this.turns.length, blocked: this.blocked, seconds: this.seconds };
+  }
+
+  toString() { return `[${this.model}] ${this.status}: ${(this.answer || this.trail).slice(0, 120)}`; }
+}
+class Agent {
+  /* A wired harness: nine components, one registry, one funnel, one loop. */
+  constructor(options = {}) {
+    const {
+      name = 'harness', root = '/', model = 'model.scripted', memory_path: memoryPath = 'agent.html:memory',
+      budget_tokens: budgetTokens = 4000, keep_last: keepLast = 6, max_steps: maxSteps = 12,
+      allow_network: allowNetwork = false, dry_run: dryRun = false, extra_dirs: extraDirs = [],
+      registry = null, clock = nowSeconds, verbose = false, onEvent = null, manual = null,
+    } = options;
+    this.name = name;
+    this.root = resolvePath(root, '');
+    this.clock = clock;
+    this.onEvent = onEvent;
+    // start from a copy of the page-wide registry so tool() plugins are adopted,
+    // then keep our own so agents cannot leak into each other.
+    this.registry = registry || new Registry();
+    Object.assign(this.registry.tools, defaultRegistry.tools);
+    this.components = {};
+
+    this.policy = new Policy({ root: this.root, allow_network: allowNetwork, dry_run: dryRun,
+                               max_steps: maxSteps, extra_dirs: extraDirs });
+    this.hooks = new Hooks(this.registry);
+    this.memory = new Memory(memoryPath, { clock });
+    this.context = new Context({ budget_tokens: budgetTokens, keep_last: keepLast });
+    this.prompts = new Prompts();
+    this.skills = new Skills('agent.html:skills', { registry: this.registry });
+    this.tasks = new Tasks({ clock });
+    this.scheduler = new Scheduler({ clock });
+    this.models = new Models({ registry: this.registry, env: ENDPOINTS, manual });
+    this.builtins = new Builtins(this.root, { clock });
+    for (const component of [this.policy, this.hooks, this.memory, this.context, this.prompts, this.skills,
+                             this.tasks, this.scheduler, this.models, this.builtins]) {
+      if (!(component.constructor.name in this.components)) this.components[component.constructor.name] = component;
+    }
+    this.model = model;
+    this.tool_defaults = {};          // operator-set args merged into every call
+    this.journal = [];
+    this.runs = [];
+    this.verbose = verbose;
+    this.plugins = { loaded: [], modules: [], errors: {} };
+    this.registerLoopTools();
+  }
+
+  // -- wiring ------------------------------------------------------------
+  registerLoopTools() {
+    const reg = this.registry;
+    this.hooks.register(reg);
+    this.memory.register(reg);
+    this.context.register(reg);
+    this.prompts.register(reg, this);
+    this.skills.register(reg);
+    this.tasks.register(reg);
+    this.scheduler.register(reg);
+    this.models.register(reg);
+    this.builtins.register(reg);
+
+    reg.add(new Tool({ name: 'tools.list', desc: 'every registered tool, by component kind',
+                       args: { kind: ['string', 'tool|skill|memory|context|hook|policy|prompt|loop|task|schedule|model'] },
+                       kind: 'loop',
+                       handler: async ({ kind = '' } = {}) => ({ count: this.registry.length,
+                         kinds: Object.fromEntries(Object.values(this.registry.tools).reduce((map, spec) => {
+                           map.set(spec.kind, (map.get(spec.kind) || 0) + 1); return map; }, new Map())),
+                         tools: this.registry.brief(kind || null) }) }));
+    reg.add(new Tool({ name: 'tools.describe', desc: 'one tool: its description, args and guardrail flags',
+                       args: { tool: 'string' }, required: ['tool'], kind: 'loop',
+                       handler: async ({ tool: name }) => this.registry.get(name).brief() }));
+    reg.add(new Tool({ name: 'tools.call', desc: 'invoke any registered tool by name - the meta plug',
+                       args: { tool: 'string', args: 'object' }, required: ['tool'], kind: 'loop', mutating: true,
+                       handler: async ({ tool: name, args = null }) => (await this.call(name, args || {}, 'tools.call')).observation() }));
+    reg.add(new Tool({ name: 'policy.get', desc: 'current guardrail settings and budget usage', kind: 'policy',
+                       handler: async () => this.policy.summary() }));
+    reg.add(new Tool({ name: 'policy.set', desc: 'change guardrails: allow, deny, dry_run, allow_network, max_* ...',
+                       args: { allow: 'array', deny: 'array', confirm_required: 'array', extra_dirs: 'array',
+                               max_steps: 'integer', max_tool_calls: 'integer', max_writes: 'integer',
+                               max_deletes: 'integer', max_seconds: 'number', allow_network: 'boolean', dry_run: 'boolean' },
+                       kind: 'policy', mutating: true, handler: async (changes) => this.policy.set(this.cleanPolicyChanges(changes)) }));
+    reg.add(new Tool({ name: 'policy.check', desc: 'ask whether the guardrails would allow a call',
+                       args: { tool: 'string', args: 'object' }, required: ['tool'], kind: 'policy',
+                       handler: async ({ tool: name, args = null }) => {
+                         const spec = this.registry.get(name);
+                         const snapshot = [this.policy.calls, this.policy.writes, this.policy.deletes, this.policy.blocks.length];
+                         const [ok, reason] = this.policy.check(spec, args || {});
+                         [this.policy.calls, this.policy.writes, this.policy.deletes] = snapshot;
+                         this.policy.blocks.length = snapshot[3];
+                         return { allowed: ok, reason, tool: name, kind: spec.kind,
+                                  mutating: spec.mutating, network: spec.network, danger: spec.danger };
+                       } }));
+    reg.add(new Tool({ name: 'confirm.grant', desc: 'operator approval for one confirm-required tool (one call unless repeats)',
+                       args: { tool: 'string', repeats: ['boolean', 'keep approving until revoked'] }, required: ['tool'],
+                       kind: 'policy', mutating: true, handler: async ({ tool: name, repeats = false }) => this.grant(name, repeats) }));
+    reg.add(new Tool({ name: 'confirm.revoke', desc: 'withdraw approval for a tool', args: { tool: 'string' },
+                       required: ['tool'], kind: 'policy', mutating: true,
+                       handler: async ({ tool: name }) => ({ revoked: this.policy.revoke(name) }) }));
+    reg.add(new Tool({ name: 'context.compact', desc: 'fold old turns into one summary, with a model if one is allowed',
+                       args: { model: ['string', 'blank = extractive summary'] }, kind: 'context', mutating: true,
+                       handler: async ({ model: name = '' } = {}) => this.compact(name) }));
+    reg.add(new Tool({ name: 'agent.status', desc: 'the live picture: loop, budgets, window, plugins, jobs, tasks',
+                       kind: 'loop', handler: async () => this.panel() }));
+    reg.add(new Tool({ name: 'agent.step', desc: 'run exactly one observe-act cycle and return it',
+                       args: { goal: ['string', 'set or replace the goal'] }, kind: 'loop', mutating: true,
+                       handler: async ({ goal = '' } = {}) => this.step(goal) }));
+    reg.add(new Tool({ name: 'agent.run', desc: 'hand a goal to the loop and let it drive (denied by default)',
+                       args: { goal: 'string', max_steps: 'integer' }, required: ['goal'], kind: 'loop', mutating: true,
+                       handler: async ({ goal, max_steps: maxSteps = 0 }) => (await this.run(goal, { max_steps: maxSteps })).brief() }));
+  }
+
+  cleanPolicyChanges(changes) {
+    const out = {};
+    for (const [key, value] of Object.entries(changes)) if (value !== undefined && value !== null) out[key] = value;
+    return out;
+  }
+
+  async notify(kind, detail) {
+    if (this.onEvent) await this.onEvent(kind, detail);
+  }
+
+  // -- the funnel --------------------------------------------------------
+  async call(name, args = null, source = 'loop') {
+    const started = this.clock();
+    const spec = this.registry.tools[name];
+    const kwargs = { ...(this.tool_defaults[name] || {}), ...(args || {}) };
+    if (!spec) {
+      const record = new Call({ tool: name, args: kwargs, source,
+                                error: `no tool '${name}'. ${this.registry.length} are registered; tools.list shows them`,
+                                ms: Math.round((this.clock() - started) * 1000 * 100) / 100 });
+      this.journal.push(record);
+      await this.hooks.emit('tool_error', { tool: name, args: kwargs, error: record.error, source });
+      await this.notify('call', record);
+      return record;
+    }
+    const payload = { tool: name, args: { ...kwargs }, source, kind: spec.kind };
+    const verdict = await this.hooks.emit('pre_tool', payload);
+    let record;
+    if (verdict.block) {
+      record = new Call({ tool: name, kind: spec.kind, plugin: spec.plugin, args: verdict.args, blocked: true,
+                          reason: verdict.reason, source });
+    } else {
+      const allowedArgs = verdict.args;
+      const [ok, reason] = this.policy.check(spec, allowedArgs, source);
+      if (!ok) {
+        record = new Call({ tool: name, kind: spec.kind, plugin: spec.plugin, args: allowedArgs, blocked: true,
+                            reason, source });
+      } else {
+        try {
+          record = new Call({ tool: name, kind: spec.kind, plugin: spec.plugin, args: allowedArgs, ok: true,
+                              value: await spec.call(allowedArgs), source });
+        } catch (error) {
+          record = new Call({ tool: name, kind: spec.kind, plugin: spec.plugin, args: allowedArgs,
+                              error: error instanceof ToolError ? error.message : `${error.name}: ${error.message}`,
+                              source });
+        }
+      }
+    }
+    record.ms = Math.round((this.clock() - started) * 1000 * 100) / 100;
+    if (record.blocked) this.recordBlock(name, record.reason);
+    this.journal.push(record);
+    if (record.error) {
+      await this.hooks.emit('tool_error', { tool: name, args: record.args, error: record.error, source });
+    } else if (record.ok) {
+      const post = await this.hooks.emit('post_tool', { tool: name, args: record.args, result: record.value, source });
+      if (post.block) {
+        record.blocked = true;
+        record.reason = `post_tool veto: ${post.reason}`;
+        record.ok = false;
+      }
+    }
+    await this.notify('call', record);
+    return record;
+  }
+
+  recordBlock(name, reason) {
+    if (!this.policy.blocks.slice(-3).some((row) => row.tool === name && row.reason === reason)) {
+      this.policy.blocks.push({ tool: name, reason, at: this.clock() });
+    }
+  }
+
+  toolPrompt() {
+    const lines = [];
+    for (const spec of Object.values(this.registry.tools)) {
+      if (matchesAny(spec.name, this.policy.deny)) continue;
+      const flags = spec.danger ? '!' : spec.mutating ? '+' : spec.network ? '~' : ' ';
+      const args = Object.keys(spec.args).map((key) => (spec.required.includes(key) ? `<${key}>` : `[${key}]`)).join(' ');
+      lines.push(`${flags} ${spec.name} ${args}: ${spec.desc}`);
+    }
+    return lines.sort().join(NL);
+  }
+
+  visibleTools() {
+    return this.registry.names().filter((name) => !matchesAny(name, this.policy.deny));
+  }
+
+  async think(step, goal) {
+    const messages = this.context.asMessages();
+    const call = await this.call(this.model, { messages, tools: this.visibleTools(), goal, step }, 'model');
+    if (call.blocked || !call.ok) return [{ thought: '', final: '' }, call];
+    return [call.value && typeof call.value === 'object' ? call.value : {}, call];
+  }
+
+  async fileSideChannels(action) {
+    let notes = 0, tasks = 0;
+    const memory = action.memory;
+    if (memory && typeof memory === 'object' && memory.key) {
+      this.memory.write({ key: memory.key, value: memory.value === undefined ? '' : memory.value,
+                          tags: memory.tags || '', kind: memory.kind || 'note' });
+      notes += 1;
+    }
+    const task = action.task;
+    if (task && typeof task === 'object' && task.subject) {
+      this.tasks.create({ subject: task.subject, description: task.description || '', status: task.status || 'pending' });
+      tasks += 1;
+    }
+    return { memory: notes, tasks };
+  }
+
+  // -- the loop ----------------------------------------------------------
+  async run(goal, options = {}) {
+    const { max_steps: maxSteps = 0, reset = true, script = null } = options;
+    if (script) this.models.script({ script: 'default', turns: script });
+    const run = new Run(goal, this.model, { started: this.clock() });
+    this.stopped = false;
+    this.policy.startRun();
+    if (reset) this.context.reset(this.prompts.render(this));
+    this.context.push('user', goal, 'goal');
+    const steps = Math.trunc(maxSteps || this.policy.max_steps);
+    await this.hooks.emit('plan', { tool: 'goal', args: { goal, steps } });
+    let modelFailures = 0;
+    for (let index = 0; index < steps; index += 1) {
+      if (this.stopped) { run.status = 'stopped'; break; }
+      const [action, modelCall] = await this.think(index, goal);
+      if (modelCall.blocked || !modelCall.ok) {
+        modelFailures += 1;
+        this.context.push('tool', modelCall.observation(), this.model);
+        if (modelFailures >= 2) {
+          run.status = 'model-failed';
+          run.error = modelCall.reason || modelCall.error;
+          break;
+        }
+        continue;
+      }
+      modelFailures = 0;
+      const thought = String(action.thought || '');
+      const filed = await this.fileSideChannels(action);
+      run.memory_writes += filed.memory;
+      run.tasks_created += filed.tasks;
+      const turn = new Turn(index, { thought, action });
+      if (action.final) {
+        turn.final = String(action.final);
+        this.context.push('assistant', turn.final, 'final');
+        run.turns.push(turn);
+        run.status = 'done';
+        await this.notify('turn', turn);
+        break;
+      }
+      const spec = action.call || {};
+      const name = String(spec.tool || '');
+      if (!name) {
+        this.context.push('tool', { error: `turn ${index} had neither call nor final: ${JSON.stringify(action).slice(0, 200)}` }, 'loop');
+        run.turns.push(turn);
+        await this.notify('turn', turn);
+        continue;
+      }
+      const record = await this.call(name, spec.args || {}, 'loop');
+      turn.call = record;
+      run.turns.push(turn);
+      this.context.push('assistant', thought || name, 'thought');
+      this.context.push('tool', record.observation(), name);
+      await this.notify('turn', turn);
+      if (this.context.needsCompaction()) {
+        const outcome = await this.compact();
+        if (outcome.compacted) run.compactions += 1;
+      }
+      if (this.scheduler.due().length) await this.tick();
+    }
+    if (run.status === 'running') run.status = 'steps-exhausted';
+    run.seconds = Math.round((this.clock() - run.started) * 1000) / 1000;
+    await this.hooks.emit('stop', { tool: run.status, args: { goal, turns: run.turns.length } });
+    this.runs.push(run);
+    await this.notify('run', run);
+    return run;
+  }
+
+  /* One cycle for external control: a scheduler or a human can drive the loop. */
+  async step(goal = '') {
+    if (goal) this.context.push('user', goal, 'goal');
+    const active = [...this.runs].reverse().find((run) => run.status === 'running') || null;
+    const target = goal || (active ? active.goal
+      : this.context.messages.length ? this.context.messages[0].content : '');
+    const index = active ? active.turns.length : 0;
+    const [action, modelCall] = await this.think(index, target);
+    if (modelCall.blocked || !modelCall.ok) {
+      return { ok: false, reason: modelCall.reason || modelCall.error, model: this.model };
+    }
+    const filed = await this.fileSideChannels(action);
+    if (action.final) {
+      this.context.push('assistant', action.final, 'final');
+      return { ok: true, thought: action.thought || '', final: action.final, filed };
+    }
+    const spec = action.call || {};
+    const record = await this.call(String(spec.tool || ''), spec.args || {}, 'step');
+    this.context.push('assistant', action.thought || '', 'thought');
+    this.context.push('tool', record.observation(), record.tool);
+    return { ok: record.ok, thought: action.thought || '', call: record.brief(), filed };
+  }
+
+  async compact(modelName = '') {
+    if (!modelName || !this.registry.has(modelName)) return this.context.compact();
+    const digest = this.context.messages.map((m) => `${m.role}: ${m.content.slice(0, 300)}`).join(NL);
+    const ask = await this.call(modelName, { messages: [
+      { role: 'system', content: 'Summarise the transcript in <=3 sentences, keeping names, paths, numbers and any blocked call.' },
+      { role: 'user', content: digest }] }, 'compact');
+    if (ask.ok && ask.value && typeof ask.value === 'object') {
+      const text = String(ask.value.final || ask.value.thought || '');
+      return this.context.compact(text || null);
+    }
+    return this.context.compact();
+  }
+
+  async dispatch(name, args = null) { return (await this.call(name, args || {}, 'schedule')).observation(); }
+
+  async tick(now = null) { return this.scheduler.tick((name, args) => this.dispatch(name, args), now); }
+
+  hook(event, pattern = '*', call = null, toolName = '', name = '') {
+    return this.hooks.add(event, pattern, call, toolName, name);
+  }
+
+  script(turns, name = 'default', append = false) { return this.models.script({ script: name, turns, append }); }
+
+  grant(name, repeats = false) {
+    this.registry.get(name);
+    this.policy.grant(name, repeats);
+    return { granted: name, repeats };
+  }
+
+  panel() {
+    const kinds = {};
+    for (const spec of Object.values(this.registry.tools)) (kinds[spec.kind] = kinds[spec.kind] || []).push(spec.name);
+    const counts = Object.fromEntries(Object.entries(kinds).map(([key, list]) => [key, list.length]));
+    const sorted = Object.fromEntries(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)));
+    return { agent: this.name, root: this.root, model: this.model, tools: this.registry.length, kinds: sorted,
+             plugins: this.plugins.loaded, policy: this.policy.summary(), context: this.context.stats(),
+             memory: this.memory.entries.length,
+             skills: { installed: this.skills.list().map((pack) => pack.name), active: this.skills.active },
+             tasks: this.tasks.summary(), jobs: this.scheduler.jobs.length, hooks: this.hooks.describe(),
+             hook_firings: this.hooks.fired.length, blocks: this.policy.blocks.slice(-5),
+             journal: this.journal.length,
+             runs: this.runs.map((run) => ({ goal: run.goal.slice(0, 60), status: run.status, turns: run.turns.length })) };
+  }
+}
+const el = (id) => document.getElementById(id);
+const esc = (text) => String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+const speed = () => Number(el('speed').value || 0);
+
+const PRESETS = {
+  demo: {
+    goal: 'summarise the notes and prove the guardrails bite',
+    description: 'the CLI demo: writes, reads, hits the hook, hits the deny rule, files a note and a task',
+    script: [
+      { thought: 'put the note down', call: { tool: 'fs.write', args: { path: 'notes.md', content: '# notes\nalpha beta gamma delta' } } },
+      { thought: 'read it back', call: { tool: 'fs.read', args: { path: 'notes.md' } } },
+      { thought: 'peek at something private', call: { tool: 'fs.read', args: { path: 'secret.txt' } } },
+      { thought: 'try to delete it', call: { tool: 'fs.delete', args: { path: 'notes.md' } } },
+      { thought: 'remember the count', memory: { key: 'note-length', value: '4 words', kind: 'fact' }, task: { subject: 'expand the notes' } },
+      { thought: 'count the words', call: { tool: 'memory.search', args: { query: 'note' } } },
+      { thought: 'answer', final: 'notes.md holds 4 words; secret read and delete were both blocked' },
+    ],
+    setup: (agent) => {
+      agent.hook('pre_tool', 'fs.*', (payload) => (
+        String((payload.args || {}).path || '').includes('secret')
+          ? { block: true, reason: 'the no-secrets hook refuses private files' } : null), '', 'no-secrets');
+      agent.grant('fs.write');
+    },
+  },
+  'tool-loop': {
+    goal: 'write a note and read it back',
+    description: 'the shortest honest loop: two tool calls, then final',
+    script: [
+      { thought: 'write', call: { tool: 'fs.write', args: { path: 'note.txt', content: 'one line, three words' } } },
+      { thought: 'read', call: { tool: 'fs.read', args: { path: 'note.txt' } } },
+      { thought: 'answer', final: 'the note holds one line of three words' },
+    ],
+    setup: (agent) => agent.grant('fs.write'),
+  },
+  guardrails: {
+    goal: 'do the forbidden things so the policy can say no',
+    description: 'no approvals and no network: every attempt comes back blocked, each time by a different rule',
+    approve: false,
+    script: [
+      { thought: 'write without asking', call: { tool: 'fs.write', args: { path: 'x.txt', content: 'hi' } } },
+      { thought: 'reach the network', call: { tool: 'http.get', args: { url: 'http://127.0.0.1:11434/api/tags' } } },
+      { thought: 'delete', call: { tool: 'fs.delete', args: { path: 'notes.md' } } },
+      { thought: 'give up', final: 'approval, network and deny rules each stopped a call' },
+    ],
+  },
+  'memory-context': {
+    goal: 'note the file, then answer from memory',
+    description: 'side channels file a note; a 900-token window forces compaction',
+    script: [
+      { thought: 'read a long file', call: { tool: 'fs.read', args: { path: 'notes.md' } } },
+      { thought: 'read the data too', call: { tool: 'fs.list', args: { path: '/data' } } },
+      { thought: 'remember it', memory: { key: 'notes', value: '3 lines of prose', kind: 'fact' } },
+      { thought: 'answer', final: 'recorded in memory' },
+    ],
+  },
+  'tasks-scheduler': {
+    goal: 'queue a job, let the loop tick it',
+    description: 'a job is a tool call through the same funnel',
+    script: [
+      { thought: 'track it', task: { subject: 'read the note' } },
+      { thought: 'echo', call: { tool: 'echo', args: { text: 'beat' } } },
+      { thought: 'done', final: 'a job fired and a task was created' },
+    ],
+    setup: (agent) => agent.scheduler.add({ name: 'heartbeat', tool: 'echo', args: { text: 'beat' }, every: 0.001, max_runs: 2 }),
+  },
+  'skills-prompts': {
+    goal: 'work while the notekeeper skill is active',
+    description: 'an active skill body joins the system prompt; missing tools are reported',
+    script: [
+      { thought: 'activate', call: { tool: 'skills.use', args: { name: 'notekeeper' } } },
+      { thought: 'read', call: { tool: 'fs.read', args: { path: 'notes.md' } } },
+      { thought: 'answer', final: 'notekeeper active; see the prompt tab' },
+    ],
+  },
+  'nested-agents': {
+    goal: 'delegate the counting to a worker',
+    description: 'a second agent is just another tool in this registry',
+    script: [
+      { thought: 'ask the worker', call: { tool: 'worker.ask', args: { goal: 'count the rows' } } },
+      { thought: 'answer', final: 'the worker says 3 rows counted' },
+    ],
+    setup: (agent) => {
+      const worker = new Agent({ name: 'worker', memory_path: null });
+      worker.script([{ call: { tool: 'echo', args: { text: 'counted 3 rows' } } }, { final: '3 rows counted' }]);
+      agent.registry.add(new Tool({ name: 'worker.ask', desc: 'hand a goal to the worker agent',
+                                    args: { goal: 'string' }, required: ['goal'], kind: 'tool', mutating: true,
+                                    handler: async ({ goal }) => (await worker.run(goal)).answer }));
+      window.workerAgent = worker;
+    },
+  },
+};
+
+// -- operator settings: localStorage, applied whenever an agent is built ----
+const SETTINGS_KEY = 'agent.html:settings';
+const BUDGETS = ['max_steps', 'max_tool_calls', 'max_writes', 'max_deletes', 'max_seconds'];
+const RULE_LISTS = ['allow', 'deny', 'confirm_required', 'forbidden_commands', 'extra_dirs'];
+const POLICY_DEFAULTS = new Policy();
+
+// the guardrail lists belong to the engine, not the operator: settings saved by an
+// older file would otherwise keep running with a gate this version no longer has
+const RULE_SEEDS = ['deny', 'confirm_required', 'forbidden_commands'];
+const SETTINGS_VERSION = 2;
+
+function loadSettings() {
+  let saved = {};
+  const raw = STORE.get(SETTINGS_KEY);
+  if (raw) { try { saved = JSON.parse(raw) || {}; } catch (error) { saved = {}; } }
+  const base = { tab: 'chat', model: 'model.scripted', net: false, dry: false, grant: true,
+                 policy: {}, tool_defaults: {}, speed: 150, ...saved };
+  if (base.version !== SETTINGS_VERSION) {
+    base.version = SETTINGS_VERSION;
+    base.policy = { ...base.policy };
+    for (const key of RULE_SEEDS) delete base.policy[key];
+  }
+  return base;
+}
+
+let settings = loadSettings();
+
+function saveSettings(patch = {}) {
+  settings = { ...settings, ...patch };
+  if (agent) {
+    const policy = {};
+    for (const key of BUDGETS.concat(RULE_LISTS)) policy[key] = agent.policy[key];
+    settings.policy = policy;
+    settings.tool_defaults = agent.tool_defaults;
+    settings.model = agent.model;
+    settings.net = agent.policy.allow_network;
+    settings.dry = agent.policy.dry_run;
+    settings.speed = Number(el('speed').value || 0);
+  }
+  STORE.set(SETTINGS_KEY, JSON.stringify(settings));
+  el('settings-note').textContent = `saved ${new Date().toLocaleTimeString()}`;
+}
+
+function applySettings(target) {
+  for (const [key, value] of Object.entries(settings.policy || {})) {
+    if (BUDGETS.includes(key)) target.policy[key] = Number(value);
+    else if (RULE_LISTS.includes(key) && Array.isArray(value)) target.policy[key] = [...value];
+  }
+  target.tool_defaults = JSON.parse(JSON.stringify(settings.tool_defaults || {}));
+}
+
+// -- four panels, one visible at a time -------------------------------------
+function showTab(name) {
+  for (const button of el('tabs').children) button.classList.toggle('on', button.dataset.tab === name);
+  for (const pane of document.querySelectorAll('main > .pane')) {
+    pane.classList.toggle('on', pane.id === `pane-${name}`);
+  }
+  saveSettings({ tab: name });
+  render();
+}
+
+let agent = null;
+let toolKind = '';
+let activeTool = null;              // the tool whose drawer is open
+const drawer = { note: '', outcome: '', policyNote: '' };
+
+// -- pane 1: the conversation ------------------------------------------------
+function chat(cls, html) {
+  const row = document.createElement('div');
+  row.className = `msg ${cls}`;
+  row.innerHTML = html;
+  el('chat-log').appendChild(row);
+  el('chat-log').scrollTop = el('chat-log').scrollHeight;
+  el('c-chat').textContent = `${el('chat-log').children.length} lines`;
+}
+
+function callLine(record, where) {
+  const flag = record.blocked ? 'block' : record.error ? 'err' : 'ok';
+  const shown = record.blocked ? record.reason : record.error ? record.error : JSON.stringify(record.value);
+  return `<b>${esc(record.tool)}</b> <span class="tag">${esc(where || record.source)}</span> ${flag} `
+    + `<span>${esc(String(shown).slice(0, 200))}</span> <span class="tag">${record.ms}ms</span>`
+    + `<details><summary>args and result</summary><pre>${esc(JSON.stringify(
+        { args: record.args, value: record.value, reason: record.reason, error: record.error }, null, 2))}</pre></details>`;
+}
+
+async function onEvent(kind, detail) {
+  if (kind === 'turn') {
+    if (detail.thought) chat('thought', `turn ${detail.i}: ${esc(detail.thought)}`);
+    if (detail.call) {
+      const c = detail.call;
+      chat(`call ${c.blocked ? 'block' : c.error ? 'err' : 'ok'}`, callLine(c, 'loop'));
+    } else if (!detail.final) {
+      chat('thought', `turn ${detail.i}: no call and no final - the loop told the model and moved on`);
+    }
+    if (detail.final) chat('assistant', esc(detail.final));
+  } else if (kind === 'call' && !['loop', 'step', 'model'].includes(detail.source)) {
+    chat('note', callLine(detail));
+  } else if (kind === 'run') {
+    el('trail').textContent = `trail: ${detail.trail || '-'}`;
+    chat('note', `run ${esc(detail.status)} - ${detail.turns.length} turns, ${detail.compactions} folds, `
+      + `${detail.memory_writes} notes filed, ${detail.tasks_created} tasks, ${detail.seconds}s`);
+  }
+  render();
+  if (speed()) await sleep(speed());
+}
+
+async function sendGoal() {
+  const goal = el('goal').value.trim();
+  if (!goal) { chat('note', 'nothing to do - write a goal first'); return; }
+  el('status').textContent = 'running';
+  chat('user', esc(goal));
+  try {
+    await agent.run(goal);
+  } catch (error) { chat('note', `run raised ${esc(error.name)}: ${esc(error.message)}`); }
+  el('status').textContent = 'idle';
+  render();
+}
+
+function loadScript(queueTo) {
+  const text = (queueTo || el('script')).value.trim();
+  if (!text) { agent.models.scripts = {}; return 'script queue cleared'; }
+  let rows;
+  try { rows = JSON.parse(text); } catch (error) { return `bad script: ${error.message}`; }
+  if (!Array.isArray(rows)) return 'a script must be a JSON array of actions';
+  const outcome = agent.script(rows);
+  return `model.set_script queued ${outcome.turns} turns`;
+}
+
+// -- pane 2: tools, guard rails, prompts, endpoints -------------------------
+const marksFor = (spec) => [[spec.danger, 'd', '!'], [spec.mutating, 'm', '+'], [spec.network, 'n', '~']]
+  .filter((row) => row[0]).map((row) => `<span class="${row[1]}">${row[2]}</span>`).join('');
+
+const busyIn = (node) => {
+  const active = document.activeElement;
+  if (!node || !active || active === document.body || !node.contains(active)) return false;
+  return /^(TEXTAREA|INPUT|SELECT)$/.test(active.tagName) && !['checkbox', 'radio'].includes(active.type);
+};
+
+const denyRule = (name) => agent.policy.deny.find((pattern) => fnmatch(name, pattern)) || '';
+const approved = (name) => name in agent.policy.granted;
+
+function drawerHtml(spec) {
+  const defaults = agent.tool_defaults[spec.name] || {};
+  const fields = Object.entries(spec.args).map(([key, type]) =>
+    `<div class="row"><span class="tag">${esc(key)} <i>${esc(type)}</i>${spec.required.includes(key) ? ' *' : ''}</span>`
+    + `<input type="text" data-arg="${esc(key)}" size="20" spellcheck="false"></div>`).join('');
+  const needsApproval = agent.policy.confirm_required.includes(spec.name);
+  return `<div class="drawer" data-drawer="${esc(spec.name)}">
+    <div><h4>default args - agent.tool_defaults</h4>
+      <textarea data-defaults spellcheck="false">${esc(JSON.stringify(defaults, null, 2))}</textarea>
+      <div class="row"><button data-save-defaults="${esc(spec.name)}">save defaults</button>
+        <button data-clear-defaults="${esc(spec.name)}">clear</button></div>
+      <label class="switch ${needsApproval ? 'on' : ''}"><input type="checkbox" data-require-approval="${esc(spec.name)}"
+        ${needsApproval ? 'checked' : ''}><i></i>require operator approval</label>
+      <div class="row">${approved(spec.name)
+        ? `<button class="danger" data-revoke="${esc(spec.name)}">revoke approval</button>`
+        : `<button data-approve="${esc(spec.name)}">approve once</button>
+           <button data-approve="${esc(spec.name)}:repeat">approve always</button>`}</div>
+    </div>
+    <div><h4>invoke through the funnel</h4>${fields || '<div class="row"><span class="tag">takes no args</span></div>'}
+      <div class="row"><button class="primary" data-invoke="${esc(spec.name)}">call it</button>
+        <button data-probe="${esc(spec.name)}">ask policy.check first</button></div>
+      <pre>${esc(drawer.outcome)}</pre></div>
+    <div><h4>spec</h4><pre>${esc(JSON.stringify({ kind: spec.kind, plugin: spec.plugin, args: spec.args,
+      required: spec.required, mutating: spec.mutating, network: spec.network, danger: spec.danger,
+      deletes: spec.deletes }, null, 2))}</pre>
+      ${drawer.note ? `<pre>${esc(drawer.note)}</pre>` : ''}</div>
+  </div>`;
+}
+
+function renderTools() {
+  if (busyIn(el('tools'))) return;
+  const filter = el('tool-filter').value.trim();
+  const counts = {};
+  for (const spec of Object.values(agent.registry.tools)) counts[spec.kind] = (counts[spec.kind] || 0) + 1;
+  el('c-tools').textContent = `${agent.registry.length} tools, ${agent.visibleTools().length} allowed`;
+  el('tool-tabs').innerHTML = ['', ...Object.keys(counts).sort()].map((kind) =>
+    `<button class="${kind === toolKind ? 'on' : ''}" data-kind="${esc(kind)}">`
+    + `${kind || 'all'} (${kind ? counts[kind] : agent.registry.length})</button>`).join('');
+  el('tools').innerHTML = agent.registry.brief(toolKind || null)
+    .filter((spec) => !filter || spec.name.includes(filter)).map((spec) => {
+      const off = denyRule(spec.name);
+      const need = agent.policy.confirm_required.includes(spec.name);
+      return `<div class="tool-row"><span class="kind">${esc(spec.kind)}</span>`
+        + `<span><b>${esc(spec.name)}</b> <span class="marks">${marksFor(spec)}</span>`
+        + `<br><span class="tag">${esc(spec.desc)}</span>`
+        + (off ? ` <span class="why">off - rule '${esc(off)}'</span>` : '')
+        + (need ? ` <span class="why">${approved(spec.name) ? 'approved' : 'awaits approval'}</span>` : '')
+        + (Object.keys(agent.tool_defaults[spec.name] || {}).length
+            ? ` <span class="why">has defaults</span>` : '') + '</span>'
+        + `<button data-toggle="${esc(spec.name)}">${off ? 'enable' : 'disable'}</button>`
+        + `<button data-config="${esc(spec.name)}">${activeTool === spec.name ? 'close' : 'configure'}</button></div>`
+        + (activeTool === spec.name ? drawerHtml(spec) : '');
+    }).join('');
+}
+
+function renderGuardrails() {
+  if (busyIn(el('guardrails'))) return;
+  const policy = agent.policy.summary();
+  el('c-blocks').textContent = `${policy.blocked} blocks, ${JSON.stringify(policy.used)}`;
+  const chip = (text, cls, data) => `<span class="chip ${cls || ''}">${esc(text)}</span>`
+    + (data ? `<button class="danger" data-drop-rule="${data}" title="remove">x</button>` : '');
+  const list = (key, cls) => (agent.policy[key].length
+    ? agent.policy[key].map((pattern) => chip(pattern, cls, `${key}:${pattern}`)).join('')
+    : '<span class="empty">none</span>');
+  el('guardrails').innerHTML = `<div class="kv"><b>root</b><span>${esc(agent.root)}</span>
+      <b>network</b><span>${policy.allow_network ? 'on' : 'off'}</span>
+      <b>dry run</b><span>${policy.dry_run ? 'on' : 'off'}</span>
+      <b>granted</b><span>${Object.entries(policy.granted).map(([k, v]) =>
+        chip(`${k}${v < 0 ? ' always' : ' once'}`)).join('') || '<span class="empty">none</span>'}</span>
+      <b>left</b><span>${esc(agent.policy.promptBlock())}</span></div>
+    <div class="row"><span class="tag">deny</span>${list('deny', 'missing')}</div>
+    <div class="row"><span class="tag">allow list</span>${list('allow')}</div>
+    <div class="row"><span class="tag">needs approval</span>${list('confirm_required')}</div>
+    <div class="row"><span class="tag">forbidden command patterns</span>${list('forbidden_commands')}</div>
+    <div class="row"><span class="tag">extra dirs the sandbox also allows</span>${list('extra_dirs')}</div>
+    <div class="row"><input id="rule-knob" type="text" list="rule-knobs" size="10" placeholder="knob" value="deny">
+      <datalist id="rule-knobs">${RULE_LISTS.map((key) => `<option value="${key}"></option>`).join('')}</datalist>
+      <input id="rule-pattern" type="text" size="14" placeholder="pattern, e.g. fs.delete">
+      <button id="rule-add">add rule</button></div>
+    <div class="row"><button data-approve="fs.write">approve fs.write once</button>
+      <button data-approve="fs.write:repeat">approve fs.write always</button>
+      <button class="danger" data-revoke="fs.write">revoke</button></div>
+    <pre>${agent.policy.blocks.slice(-8).map((block) => `${esc(block.tool)}: ${esc(block.reason)}`)
+      .join(NL) || '<span class="empty">nothing blocked yet</span>'}</pre>`;
+}
+
+function renderPolicyEditor() {
+  if (busyIn(el('policy-editor'))) return;
+  const p = agent.policy;
+  el('policy-editor').innerHTML = `<div class="knob">${BUDGETS.map((key) =>
+    `<span>${key}</span><input type="number" step="1" min="0" data-budget="${key}" value="${p[key]}">`).join('')}</div>
+    ${RULE_LISTS.map((key) => `<div class="row"><span class="tag">${key}, one per line</span></div>
+      <textarea data-list="${key}" spellcheck="false">${esc(p[key].join(NL))}</textarea>`).join('')}
+    <div class="row"><button id="policy-apply">apply to policy</button>
+      <button id="policy-defaults">restore factory defaults</button>
+      <button id="policy-dump">policy.get</button></div>
+    <pre id="policy-note">${esc(drawer.policyNote || '')}</pre>`;
+}
+
+const ENDPOINT_FIELDS = {
+  'model.ollama': [['url', 'OLLAMA_HOST'], ['model', 'OLLAMA_MODEL'], ['temperature', '']],
+  'model.openai': [['base_url', 'OPENAI_BASE_URL'], ['model', 'OPENAI_MODEL'], ['api_key', 'OPENAI_API_KEY']],
+  'model.llamacpp': [['base_url', 'LLAMACPP_URL'], ['model', ''], ['temperature', ''], ['n_predict', '']],
+};
+
+function renderEndpoints() {
+  if (busyIn(el('endpoints'))) return;
+  el('endpoints').innerHTML = Object.entries(ENDPOINT_FIELDS).map(([name, fields]) => {
+    const defaults = agent.tool_defaults[name] || {};
+    return `<div class="row"><b>${esc(name)}</b>${denyRule(name) ? ' <span class="why">off</span>' : ''}
+      ${agent.policy.confirm_required.includes(name) && !approved(name) ? ' <span class="why">awaits approval</span>' : ''}</div>
+      <div class="knob">${fields.map(([key, env]) => `<span>${esc(key)}${env ? ` <i class="tag">(env ${esc(env)})</i>` : ''}</span>`
+        + `<input type="text" data-endpoint="${esc(name)}" data-key="${esc(key)}" size="26" spellcheck="false" `
+        + `value="${esc(defaults[key] !== undefined ? defaults[key] : (env ? ENDPOINTS[env] : ''))}">`).join('')}</div>`;
+  }).join('')
+    + `<div class="row"><span class="tag">AGENT_TIMEOUT seconds (blank = per-model default)</span>`
+    + `<input type="text" data-env="AGENT_TIMEOUT" size="6" value="${esc(ENDPOINTS.AGENT_TIMEOUT)}"></div>
+       <div class="row"><button id="endpoints-clear">blank every endpoint default</button></div>
+       <pre>These are written into agent.tool_defaults, so every model.* call gets them without the model
+repeating them - the same merge the loop uses. model.ollama/openai/llamacpp are network tools: they stay
+blocked until allow network is on, and they only answer if something is actually listening.</pre>`;
+}
+
+function setToolDefault(name, key, value) {
+  const next = { ...(agent.tool_defaults[name] || {}) };
+  if (value === '') delete next[key]; else next[key] = value;
+  if (Object.keys(next).length) agent.tool_defaults[name] = next; else delete agent.tool_defaults[name];
+  saveSettings();
+}
+
+function toggleTool(name) {
+  const rule = denyRule(name);
+  if (rule) {
+    if (rule === name) agent.policy.deny = agent.policy.deny.filter((pattern) => pattern !== name);
+    else agent.policy.deny = agent.policy.deny.concat([name]);
+    drawer.note = denyRule(name) ? `still off - the rule '${denyRule(name)}' matches it too`
+      : `enabled - '${rule}' is gone from the deny list`;
+  } else {
+    agent.policy.deny = agent.policy.deny.concat([name]);
+    drawer.note = `disabled by adding '${name}' to policy.deny - it also leaves the tool prompt`;
+  }
+  saveSettings();
+}
+
+// -- pane 3: the debug surface ----------------------------------------------
+function renderCalls() {
+  if (busyIn(el('calls'))) return;
+  const filter = el('call-filter').value.trim();
+  const blockedOnly = el('call-blocked').checked;
+  const errorOnly = el('call-error').checked;
+  const kept = agent.journal.map((record, index) => ({ record, index })).filter(({ record }) =>
+    (!filter || `${record.tool} ${record.source} ${record.kind}`.includes(filter))
+    && (!blockedOnly || record.blocked) && (!errorOnly || record.error));
+  el('c-calls').textContent = `${agent.journal.length} calls, ${kept.length} shown`;
+  const cell = (index, record) => {
+    const flag = record.blocked ? 'blocked' : record.error ? 'error' : 'ok';
+    const body = record.blocked ? `blocked: ${record.reason}`
+      : record.error ? `error: ${record.error}` : JSON.stringify(record.value, null, 2);
+    return `<tr><td>${index}</td><td><b>${esc(record.tool)}</b><br><span class="kind">${esc(record.kind)}</span></td>`
+      + `<td><span class="tag">${esc(record.source)}</span>${record.plugin && record.plugin !== 'core'
+        ? `<br><span class="kind">${esc(record.plugin)}</span>` : ''}</td>`
+      + `<td><details><summary>args</summary><pre>${esc(JSON.stringify(record.args, null, 2))}</pre></details></td>`
+      + `<td class="${flag}"><details><summary>${flag}</summary><pre>${esc(String(body).slice(0, 4000))}</pre></details></td>`
+      + `<td>${record.ms}</td></tr>`;
+  };
+  el('calls').innerHTML = `<table><tr><th>#</th><th>tool</th><th>src</th><th>args</th><th>outcome</th><th>ms</th></tr>
+    ${kept.slice(-150).reverse().map(({ index, record }) => cell(index, record)).join('')
+    || '<tr><td colspan=6><span class="empty">nothing called yet</span></td></tr>'}</table>`;
+}
+
+function renderRuns() {
+  el('c-runs').textContent = `${agent.runs.length} runs`;
+  el('runs').innerHTML = `<table><tr><th>#</th><th>goal</th><th>status</th><th>turns</th><th>trail</th><th>answer</th></tr>
+    ${agent.runs.map((run, index) => `<tr><td>${index}</td><td>${esc(run.goal.slice(0, 50))}</td>
+      <td>${esc(run.status)}</td><td>${run.turns.length}</td><td>${esc(run.trail || '-')}</td>
+      <td>${esc(String(run.answer).slice(0, 70))}</td></tr>
+      <tr><td colspan="6"><details><summary>${run.turns.length} turns, ${run.compactions} folds, `
+        + `${run.memory_writes} notes, ${run.tasks_created} tasks, ${run.seconds}s${run.error ? `, error: ${esc(run.error)}` : ''}</summary>
+        ${run.turns.map((turn) => `<div class="turn ${turn.call && turn.call.blocked ? 'block'
+          : turn.final ? 'final' : turn.call && turn.call.error ? 'err' : 'ok'}">${turn.i}: `
+          + `${esc(turn.thought || turn.final || 'neither call nor final')}`
+          + (turn.call ? ` &rarr; <b>${esc(turn.call.tool)}</b> <span class="tag">${esc(JSON.stringify(turn.call.args))}</span>`
+            : '') + '</div>').join('') || '<span class="empty">no turns</span>'}</details></td></tr>`).join('')
+    || '<tr><td colspan="6"><span class="empty">no runs yet</span></td></tr>'}</table>`;
+}
+
+function renderFirings() {
+  el('c-firings').textContent = `${agent.hooks.fired.length} firings`;
+  el('firings').innerHTML = `<table><tr><th>event</th><th>hook</th><th>tool</th><th>outcome</th></tr>
+    ${agent.hooks.fired.slice(-40).reverse().map((row) => `<tr><td>${esc(row.event)}</td><td>${esc(row.hook)}</td>
+      <td>${esc(row.tool)}</td><td>${row.outcome && row.outcome.block
+        ? `<span class="why">BLOCK ${esc(row.outcome.reason)}</span>`
+        : row.outcome && row.outcome.args ? `args ${esc(JSON.stringify(row.outcome.args))}` : 'pass'}</td></tr>`).join('')
+    || '<tr><td colspan="4"><span class="empty">no hooks have fired</span></td></tr>'}</table>`;
+}
+
+function renderContext() {
+  const stats = agent.context.stats();
+  el('c-ctx').textContent = `${stats.tokens}/${stats.budget} tokens`;
+  const rows = agent.context.messages.slice(-14).map((m) =>
+    `<tr><td>${esc(m.role)}</td><td><b>${esc(m.name || '')}</b></td><td>${esc(m.content.slice(0, 90))}</td>`
+    + `<td>${m.tokens}</td></tr>`).join('');
+  el('context').innerHTML = `<div class="bar"><i class="${stats.over ? 'hot' : ''}" style="width:${Math.min(100, stats.used_pct)}%"></i></div>
+    <div class="kv"><b>used</b><span>${stats.used_pct}% (${stats.messages} messages, ${stats.compactions} folds)</span></div>
+    <div class="row"><button id="ctx-compact">fold old turns</button>
+      <button id="ctx-read">context.read all</button></div>
+    <table><tr><th>role</th><th>name</th><th>content</th><th>tok</th></tr>${rows
+    || '<tr><td colspan="4"><span class="empty">empty window</span></td></tr>'}</table>`;
+}
+
+function renderMemory() {
+  el('c-mem').textContent = `${agent.memory.entries.length} notes`;
+  el('memory').innerHTML = `<table><tr><th>key</th><th>kind</th><th>value</th><th></th></tr>
+    ${agent.memory.entries.map((entry) => `<tr><td><b>${esc(entry.key)}</b></td><td>${esc(entry.kind)}</td>`
+      + `<td>${esc(String(entry.value).slice(0, 60))}</td>`
+      + `<td><button class="danger" data-forget="${esc(entry.key)}">x</button></td></tr>`).join('')
+    || '<tr><td colspan="4"><span class="empty">nothing remembered</span></td></tr>'}</table>
+    <div class="row"><input id="mem-key" type="text" size="8" placeholder="key">
+      <input id="mem-value" type="text" size="14" placeholder="value">
+      <button id="mem-write">write note</button></div>`;
+}
+
+function renderTasks() {
+  el('c-tasks').textContent = `${agent.tasks.items.length} tasks`;
+  el('tasks').innerHTML = `<table><tr><th>#</th><th>subject</th><th>status</th><th></th></tr>
+    ${agent.tasks.items.map((task) => `<tr><td>${task.id}</td><td>${esc(task.subject)}</td><td>${esc(task.status)}</td>
+      <td>${TASK_STATUSES.filter((status) => status !== task.status)
+        .map((status) => `<button data-task-status="${task.id}:${status}">${status}</button>`).join('')}</td></tr>`).join('')
+    || '<tr><td colspan="4"><span class="empty">no tasks</span></td></tr>'}</table>
+    <div class="row"><input id="task-subject" type="text" size="18" placeholder="subject">
+      <button id="task-create">add task</button></div>
+    <pre>${esc(JSON.stringify(agent.tasks.summary()))}</pre>`;
+}
+
+function renderScheduler() {
+  el('c-jobs').textContent = `${agent.scheduler.jobs.length} jobs`;
+  const now = agent.clock();
+  el('scheduler').innerHTML = `<table><tr><th>job</th><th>tool</th><th>next in</th><th>runs</th><th></th></tr>
+    ${agent.scheduler.jobs.map((job) => `<tr><td><b>${esc(job.name)}</b></td><td>${esc(job.tool)}</td>`
+      + `<td>${job.next ? `${Math.max(0, Math.round((job.next - now) * 1000) / 1000)}s` : 'idle'}</td><td>${job.runs}</td>`
+      + `<td><button class="danger" data-job-remove="${esc(job.name)}">x</button></td></tr>`).join('')
+    || '<tr><td colspan="5"><span class="empty">no jobs</span></td></tr>'}</table>
+    <div class="row"><input id="job-name" type="text" size="8" placeholder="name">
+      <input id="job-tool" type="text" size="8" placeholder="tool">
+      <input id="job-every" type="text" size="4" placeholder="every s">
+      <input id="job-args" type="text" size="10" placeholder='{"text":"tick"}'>
+      <button id="job-add">add job</button><button id="job-tick">tick now</button></div>
+    <pre>${agent.scheduler.fired.slice(-5).map((row) => `${esc(row.job)} -> ${esc(JSON.stringify(row.result)).slice(0, 80)}`)
+      .join(NL) || '<span class="empty">nothing fired yet</span>'}</pre>`;
+}
+
+function renderFiles() {
+  const names = Object.keys(VFS).sort();
+  el('c-fs').textContent = `${names.length} files`;
+  el('files').innerHTML = `<table><tr><th>path</th><th>bytes</th><th>head</th></tr>
+    ${names.map((name) => `<tr><td><b>${esc(name)}</b></td><td>${VFS[name].length}</td>`
+    + `<td>${esc(VFS[name].slice(0, 70))}</td></tr>`).join('')
+    || '<tr><td colspan="3"><span class="empty">empty</span></td></tr>'}</table>
+    <div class="row"><button id="fs-reset">reset virtual fs</button></div>`;
+}
+
+function renderPromptLayers() {
+  if (busyIn(el('prompt-layers'))) return;
+  const layers = agent.prompts.layers;
+  const dynamic = new Set(agent.prompts.dynamic.map(([layer]) => layer));
+  el('prompt-layers').innerHTML = `<table><tr><th>layer</th><th>tokens</th><th>chars</th><th>live</th><th>head</th></tr>
+    ${Object.entries(layers).map(([key, text]) => `<tr><td><b>${esc(key)}</b></td><td>${estimateTokens(text)}</td>`
+      + `<td>${String(text).length}</td><td>${dynamic.has(key) ? 'yes' : ''}</td>`
+      + `<td>${esc(String(text).slice(0, 60).replace(/\n/g, ' '))}</td></tr>`).join('')}</table>
+    <div class="row"><select id="layer-name">${Object.keys(layers).map((key) => `<option>${key}</option>`).join('')}</select>
+      <input id="layer-text" type="text" size="28" placeholder="replacement text for that layer">
+      <button id="layer-set">prompt.set</button></div>`;
+}
+
+function renderPrompt() {
+  const text = agent.prompts.render(agent);
+  el('c-prompt').textContent = `${estimateTokens(text)} tokens`;
+  el('prompt').textContent = text;
+}
+
+function renderPanel() { el('panel').textContent = JSON.stringify(agent.panel(), null, 2); }
+
+function renderConfig() {
+  renderTools(); renderGuardrails(); renderPolicyEditor(); renderHooks(); renderSkills(); renderEndpoints();
+  syncSwitches();
+}
+function renderDebug() {
+  renderCalls(); renderRuns(); renderFirings(); renderContext(); renderMemory(); renderTasks();
+  renderScheduler(); renderFiles(); renderPromptLayers(); renderPrompt(); renderPanel();
+}
+
+function render() {
+  if (!agent) return;
+  el('status').textContent = `tools=${agent.registry.length} allowed=${agent.visibleTools().length} `
+    + `blocks=${agent.policy.blocks.length} journal=${agent.journal.length}`;
+  if (el('pane-config').classList.contains('on')) renderConfig();
+  else if (el('pane-debug').classList.contains('on')) renderDebug();
+}
+
+// -- hooks and skills (config pane) ------------------------------------------
+function renderHooks() {
+  if (busyIn(el('hooks'))) return;
+  const fired = agent.hooks.fired.slice(-8);
+  el('c-hooks').textContent = `${agent.hooks.hooks.length} attached / ${agent.hooks.fired.length} firings`;
+  el('hooks').innerHTML = `<table><tr><th>name</th><th>event</th><th>pattern</th><th></th></tr>
+    ${agent.hooks.describe().map((hook) => `<tr><td><b>${esc(hook.name)}</b></td><td>${esc(hook.event)}</td>`
+      + `<td>${esc(hook.pattern)}${hook.tool ? ` -&gt; ${esc(hook.tool)}` : ''}</td>`
+      + `<td><button class="danger" data-unhook="${esc(hook.name)}">x</button></td></tr>`).join('')
+    || '<tr><td colspan="4"><span class="empty">no hooks</span></td></tr>'}</table>
+    <div class="row"><select id="hook-event">${HOOK_EVENTS.map((event) => `<option>${event}</option>`).join('')}</select>
+      <input id="hook-pattern" type="text" value="fs.*" size="6" placeholder="pattern">
+      <input id="hook-tool" type="text" size="8" placeholder="handler tool, e.g. memory.read">
+      <button id="hook-attach">attach tool hook</button></div>
+    <div class="row"><button id="hook-secret">+ no-secrets pre_tool</button>
+      <button id="hook-veto">+ post_tool veto on echo</button>
+      <button id="hook-broken">+ hook that raises</button></div>
+    <pre>${fired.map((row) => `${esc(row.event)} ${esc(row.hook)} -> ${row.outcome && row.outcome.block
+      ? `BLOCK ${esc(row.outcome.reason)}` : 'pass'}`).join(NL) || '<span class="empty">no firings yet</span>'}</pre>`;
+}
+
+function renderSkills() {
+  if (busyIn(el('skills'))) return;
+  el('c-skills').textContent = `${Object.keys(agent.skills.packs).length} packs, `
+    + `${agent.skills.active.length} active`;
+  el('skills').innerHTML = `<table><tr><th>skill</th><th>tools</th><th></th></tr>
+    ${agent.skills.list().map((pack) => `<tr><td><b>${esc(pack.name)}</b><br><span class="tag">${esc(pack.description)}</span></td>`
+      + `<td>${pack.tools.map((name) => `<span class="chip ${agent.registry.has(name) ? '' : 'missing'}">${esc(name)}</span>`).join('')
+        || '<span class="empty">no tool list</span>'}</td>`
+      + `<td>${pack.active ? `<button class="danger" data-skill-stop="${esc(pack.name)}">stop</button>`
+        : `<button data-skill-use="${esc(pack.name)}">use</button>`}</td></tr>`).join('')
+    || '<tr><td colspan="3"><span class="empty">no packs</span></td></tr>'}</table>
+    <div class="row"><textarea id="skill-text" spellcheck="false" placeholder="---&#10;name: my-skill&#10;tools: fs.read&#10;---&#10;instructions here"></textarea>
+      <button id="skill-add">save pack</button></div>`;
+}
+
+// -- pane 4: the worked examples as runnable cards ---------------------------
+const DEMO_ASSERTS = {
+  demo: { status: 'done', blocks: 2, memory_writes: 1, tasks_created: 1,
+          trail: 'fs.write -> fs.read -> fs.read -> fs.delete -> memory.search' },
+  'tool-loop': { status: 'done', trail: 'fs.write -> fs.read', answer_includes: 'three words' },
+  guardrails: { status: 'done', blocks: 3,
+                reason_includes: ['needs approval', 'network tools are off', "denied by guardrail rule 'fs.delete'"] },
+  'memory-context': { status: 'done', memory_writes: 1 },
+  'tasks-scheduler': { status: 'done', tasks_created: 1 },
+  'skills-prompts': { status: 'done' },
+  'nested-agents': { status: 'done', answer_includes: '3 rows' },
+};
+
+// assertions that need the scratch agent, not just the run
+const DEMO_CHECKS = {
+  demo: (target) => (target.journal.some((record) => record.blocked && /no-secrets hook/.test(record.reason))
+    ? [] : ['the no-secrets hook never blocked a read']),
+  guardrails: (target) => (target.policy.blocks.length >= 3 ? [] : ['policy.blocks never recorded the refusals']),
+  'memory-context': (target) => (target.memory.entries.length === 1
+    ? [] : [`memory holds ${target.memory.entries.length} notes, expected 1`]),
+  'tasks-scheduler': (target) => (target.scheduler.jobs.length === 1 ? [] : ['the heartbeat job was never added']),
+  'skills-prompts': (target) => (target.skills.active.includes('notekeeper')
+    ? [] : ['notekeeper never became active']),
+};
+
+// a page for the browser tool, served from a data: URL so the card needs no network at all
+const DEMO_PAGE = '<html><head><title>harness notes</title><style>body{color:red}</style></head>'
+  + '<body><script>tracking()<\/script><p>one funnel: registry, hooks, policy, handler</p>'
+  + '<a href="/hooks">hooks</a><a href="/policy">policy</a></body></html>';
+const DEMO_PAGE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(DEMO_PAGE)}`;
+
+function verdictProblems(run, asserts) {
+  const problems = [];
+  if (!asserts) return problems;
+  if (asserts.status && run.status !== asserts.status) {
+    problems.push(`status is '${run.status}', expected '${asserts.status}'`);
+  }
+  if (asserts.trail && run.trail !== asserts.trail) problems.push(`trail is '${run.trail}', expected '${asserts.trail}'`);
+  for (const key of ['memory_writes', 'tasks_created']) {
+    if (asserts[key] !== undefined && run[key] !== asserts[key]) {
+      problems.push(`${key} is ${run[key]}, expected ${asserts[key]}`);
+    }
+  }
+  if (asserts.blocks !== undefined && run.blocked.length !== asserts.blocks) {
+    problems.push(`${run.blocked.length} calls blocked, expected ${asserts.blocks}`);
+  }
+  if (asserts.answer_includes && !String(run.answer).includes(asserts.answer_includes)) {
+    problems.push(`answer does not contain '${asserts.answer_includes}'`);
+  }
+  for (const want of asserts.reason_includes || []) {
+    if (!run.blocked.some((block) => String(block.reason).includes(want))) {
+      problems.push(`no block reason matched '${want}'`);
+    }
+  }
+  return problems;
+}
+
+const DEMOS = Object.entries(PRESETS).map(([key, row]) => ({
+  key, title: key, description: row.description, goal: row.goal, script: row.script,
+  setup: row.setup, approve: row.approve, asserts: DEMO_ASSERTS[key], check: DEMO_CHECKS[key],
+})).concat([
+  {
+    key: 'funnel', title: 'the funnel, in order',
+    description: 'operator defaults merge first, a pre_tool hook rewrites the args, a post_tool hook vetoes a success',
+    approve: false, goal: 'show every stage of the funnel',
+    script: [
+      { thought: 'no args - tool_defaults supply them', call: { tool: 'echo', args: {} } },
+      { thought: 'typed args win over defaults', call: { tool: 'echo', args: { text: 'typed' } } },
+      { thought: 'this write will be vetoed after it ran', call: { tool: 'memory.write', args: { key: 'k', value: 'v' } } },
+      { final: 'merge, rewrite, veto' },
+    ],
+    setup: (target) => {
+      target.tool_defaults.echo = { text: 'from tool_defaults' };
+      target.hook('pre_tool', 'echo', (payload) => ({
+        args: { text: `${(payload.args || {}).text} (seen by hook)` } }), '', 'marks-the-args');
+      target.hook('post_tool', 'memory.write', () => ({ block: true, reason: 'this run keeps memory out' }), '', 'veto');
+    },
+    check: (target, run) => {
+      const problems = [];
+      const echoes = target.journal.filter((record) => record.tool === 'echo' && record.source === 'loop');
+      if (echoes.length !== 2) problems.push(`${echoes.length} echo calls, expected 2`);
+      else {
+        if (!String((echoes[0].args || {}).text || '').startsWith('from tool_defaults')) {
+          problems.push(`defaults were not merged into the empty call: ${JSON.stringify(echoes[0].args)}`);
+        }
+        if (!String((echoes[1].args || {}).text || '').startsWith('typed')) {
+          problems.push(`the explicit arg lost to the default: ${JSON.stringify(echoes[1].args)}`);
+        }
+      }
+      const vetoed = target.journal.find((record) => record.tool === 'memory.write');
+      if (!vetoed || !vetoed.blocked) problems.push('the post_tool veto did not reach the record');
+      else if (!/post_tool veto/.test(vetoed.reason)) problems.push(`unexpected veto reason: ${vetoed.reason}`);
+      // the veto lands after the handler, so it blocks the record without undoing the write
+      if (!target.memory.entries.some((entry) => entry.key === 'k')) {
+        problems.push('the handler should still have run before the veto - a veto is not a rollback');
+      }
+      return problems;
+    },
+  },
+  {
+    key: 'budgets', title: 'budgets, sandbox and deny',
+    description: 'one write allowed, no deletes allowed, and a second agent root that paths can escape',
+    approve: true, goal: 'push every guard at once', options: { root: '/agents' },
+    script: [
+      { thought: 'first write is in budget', call: { tool: 'fs.write', args: { path: 'one.txt', content: '1' } } },
+      { thought: 'second write is not', call: { tool: 'fs.write', args: { path: 'two.txt', content: '2' } } },
+      { thought: 'leave the sandbox', call: { tool: 'fs.read', args: { path: '../../etc/passwd' } } },
+      { thought: 'delete', call: { tool: 'fs.delete', args: { path: 'one.txt' } } },
+      { final: 'budget, sandbox and deny rule each said no' },
+    ],
+    setup: (target) => {
+      target.policy.max_writes = 1;
+      target.grant('fs.write', true);
+    },
+    asserts: { status: 'done', blocks: 3,
+               reason_includes: ['write budget 1 already spent', 'escapes the sandbox', "denied by guardrail rule 'fs.delete'"] },
+  },
+  {
+    key: 'llm-call', title: 'one plain llm call',
+    description: 'the model is a tool: one request, one action, no loop - and the network endpoints stay blocked until you open them',
+    approve: false, goal: 'answer the arithmetic',
+    setup: async (target) => {
+      target.script([{ thought: '12 * 4 is 48', final: '48' }], 'probe');
+      target.probe = await target.call('model.scripted', { script: 'probe', messages: [{ role: 'user', content: 'what is 12 * 4?' }],
+                                                           tools: ['echo'], goal: 'arithmetic', step: 0 });
+      target.checks = [];
+      for (const name of ['model.scripted', 'model.openai', 'model.llamacpp']) {
+        target.checks.push((await target.call('policy.check', { tool: name, args: {} })).value);
+      }
+    },
+    script: [{ thought: '12 * 4 is 48', final: '48' }],
+    asserts: { status: 'done', answer_includes: '48' },
+    check: (target) => {
+      const problems = [];
+      if (!target.probe || !target.probe.ok) problems.push('the direct model.scripted call never answered');
+      else if (String(target.probe.value.final) !== '48') problems.push(`the plain call said ${JSON.stringify(target.probe.value)}`);
+      const blocked = (target.checks || []).filter((row) => !row.allowed).map((row) => row.tool);
+      if (!['model.openai', 'model.llamacpp'].every((name) => blocked.includes(name))) {
+        problems.push(`model.openai and model.llamacpp should both report blocked, got ${JSON.stringify(blocked)}`);
+      }
+      if ((target.checks || []).some((row) => row.tool === 'model.scripted' && !row.allowed)) {
+        problems.push('model.scripted must stay allowed - it never touches the network');
+      }
+      return problems;
+    },
+  },
+  {
+    key: 'rag', title: 'rag: retrieve, then answer',
+    description: 'three chunks indexed in memory; only the retrieved one is allowed to answer the goal',
+    approve: false, goal: 'what caps writes? answer only from the indexed chunks',
+    script: [
+      { thought: 'retrieve first', call: { tool: 'memory.search', args: { query: 'what caps writes', kind: 'chunk' } } },
+      { thought: 'put the retrieved chunk in the window',
+        call: { tool: 'context.push', args: { role: 'user', name: 'rag',
+                                              content: 'Budgets cap writes, deletes, tool calls and wall-clock seconds.' } } },
+      { thought: 'answer from the chunk',
+        final: 'chunk:budgets: Budgets cap writes, deletes, tool calls and wall-clock seconds.' },
+    ],
+    setup: (target) => {
+      for (const [key, value] of Object.entries({
+        'chunk:funnel': 'The harness funnel is registry -> hooks -> policy -> handler.',
+        'chunk:budgets': 'Budgets cap writes, deletes, tool calls and wall-clock seconds.',
+        'chunk:models': 'Model endpoints are ordinary network tools, off by default.',
+      })) target.memory.write({ key, value, tags: 'harness', kind: 'chunk' });
+    },
+    asserts: { status: 'done', trail: 'memory.search -> context.push' },
+    check: (target) => ((target.memory.entries.filter((entry) => entry.kind === 'chunk').length === 3
+      ? [] : ['the index does not hold three chunks'])),
+  },
+  {
+    key: 'agentic-rag', title: 'agentic rag: it re-asks itself',
+    description: 'the first retrieval comes back empty, so the agent picks a better query instead of guessing',
+    approve: false, goal: 'how does the scheduler work?',
+    script: [
+      { thought: 'start with the words the goal used',
+        call: { tool: 'memory.search', args: { query: 'vector embedding cosine', kind: 'chunk' } } },
+      { thought: 'that came back empty; ask differently',
+        call: { tool: 'memory.search', args: { query: 'timer every due', kind: 'chunk' } } },
+      { thought: 'the second hit answers it', final: 'a job is a tool call on a timer' },
+    ],
+    setup: (target) => {
+      target.memory.write({ key: 'chunk:scheduler', tags: 'harness', kind: 'chunk',
+                            value: 'A job is a tool call on a timer; the loop ticks whatever is due.' });
+      target.memory.write({ key: 'chunk:tasks', tags: 'harness', kind: 'chunk',
+                            value: 'Tasks block other tasks until they are marked completed.' });
+    },
+    asserts: { status: 'done', trail: 'memory.search -> memory.search' },
+    check: (target) => {
+      const problems = [];
+      const searches = target.journal.filter((record) => record.tool === 'memory.search' && record.source === 'loop');
+      if (searches.length !== 2) return [`${searches.length} retrieval calls, expected 2`];
+      if ((searches[0].value || []).length) problems.push('query 1 should have come back empty');
+      if ((searches[1].value || []).length !== 1) problems.push('query 2 should have found exactly one chunk');
+      return problems;
+    },
+  },
+  {
+    key: 'structured-output', title: 'structured output: the hook is the schema',
+    description: 'a post_tool hook vetoes a record whose value is not one JSON object, so the model refiles it',
+    approve: false, goal: 'file the invoice as structured data',
+    script: [
+      { thought: 'file the record',
+        call: { tool: 'memory.write', args: { key: 'invoice', value: '{ total: 42, currency: EUR }' } } },
+      { thought: 'keys quoted and refiled',
+        call: { tool: 'memory.write', args: { key: 'invoice', value: JSON.stringify({ total: 42, currency: 'EUR' }) } } },
+      { thought: 'done', final: 'the second write passed the schema hook' },
+    ],
+    setup: (target) => target.hook('post_tool', 'memory.write', (payload) => {
+      try { JSON.parse(String((payload.args || {}).value)); return null; }
+      catch { return { block: true, reason: 'structured-output: value must be one JSON object' }; }
+    }, '', 'schema'),
+    asserts: { status: 'done', blocks: 1, trail: 'memory.write -> memory.write',
+               reason_includes: ['structured-output: value must be one JSON object'] },
+    check: (target) => ((target.memory.read({ key: 'invoice' }).value === JSON.stringify({ total: 42, currency: 'EUR' })
+      ? [] : ['the record in memory is not the valid one'])),
+  },
+  {
+    key: 'thinking', title: 'thinking: no reasoning, no answer',
+    description: 'a post_tool hook vetoes a model action that arrives without a thought, so the model shows its work',
+    approve: false, goal: 'answer with reasoning',
+    script: [
+      { call: { tool: 'echo', args: { text: '42, guessed' } } },
+      { thought: '41 + 1: carry the one, so 42', call: { tool: 'echo', args: { text: '42' } } },
+      { thought: 'answered with the reasoning shown', final: '42' },
+    ],
+    setup: (target) => target.hook('post_tool', 'model.scripted',
+      (payload) => (String(((payload.result || {}).thought) || '') ? null
+        : { block: true, reason: 'thinking: show the reasoning first' }), '', 'show-your-work'),
+    asserts: { status: 'done', trail: 'echo', answer_includes: '42' },
+    check: (target) => {
+      const vetoed = target.journal.filter((record) => record.tool === 'model.scripted' && record.blocked);
+      return vetoed.length === 1 ? [] : [`${vetoed.length} model calls vetoed, expected 1`];
+    },
+  },
+  {
+    key: 'judge', title: 'judge: rewrite until the bar is cleared',
+    description: 'a scoring tool grades the draft; 3 of 5 is the bar, so the loop rewrites once',
+    approve: false, goal: 'write something the judge accepts',
+    script: [
+      { thought: 'score the first draft', call: { tool: 'judge.score', args: { text: 'the harness calls tools' } } },
+      { thought: 'too thin; write the rewrite down',
+        call: { tool: 'memory.write', args: { key: 'draft',
+                                              value: 'one funnel, repeated: registry, pre_tool hooks, policy, handler, post_tool hooks, and the context window sees the observation' } } },
+      { thought: 'score the rewrite',
+        call: { tool: 'judge.score',
+                args: { text: 'one funnel, repeated: registry, pre_tool hooks, policy, handler, post_tool hooks, and the context window sees the observation' } } },
+      { thought: 'accepted', final: 'the second draft cleared the judge' },
+    ],
+    setup: (target) => target.registry.add(new Tool({ name: 'judge.score', desc: 'score a draft 0-5; 3 is the bar',
+      args: { text: 'string' }, required: ['text'], kind: 'tool',
+      handler: async ({ text }) => {
+        const words = String(text).split(/\s+/).filter(Boolean).length;
+        const score = Math.min(5, Math.floor(words / 4));
+        return { score, verdict: score >= 3 ? 'accept' : 'revise', why: `${words} words, ${score}/5` };
+      } })),
+    asserts: { status: 'done', trail: 'judge.score -> memory.write -> judge.score' },
+    check: (target) => {
+      const scores = target.journal.filter((record) => record.tool === 'judge.score' && record.ok)
+        .map((record) => record.value.score);
+      return JSON.stringify(scores) === JSON.stringify([1, 4]) ? [] : [`scores were ${JSON.stringify(scores)}, expected [1,4]`];
+    },
+  },
+  {
+    key: 'map-reduce', title: 'map-reduce over blocks',
+    description: 'map one tool per block, then reduce the mapped results through the same funnel',
+    approve: false, goal: 'add up rows.csv block by block',
+    script: [
+      { thought: 'read the file', call: { tool: 'fs.read', args: { path: 'data/rows.csv' } } },
+      { thought: 'map block 1', call: { tool: 'map.sum', args: { block: '1,2,3' } } },
+      { thought: 'map block 2', call: { tool: 'map.sum', args: { block: '4,5,6' } } },
+      { thought: 'map block 3', call: { tool: 'map.sum', args: { block: '7,8,9' } } },
+      { thought: 'reduce the three maps',
+        call: { tool: 'reduce.combine', args: { results: [{ rows: 1, sum: 6 }, { rows: 1, sum: 15 }, { rows: 1, sum: 24 }] } } },
+      { thought: 'answered', final: '3 blocks, 3 rows, total 45' },
+    ],
+    setup: (target) => {
+      target.registry.add(new Tool({ name: 'map.sum', desc: 'add up one block of csv rows',
+        args: { block: 'string' }, required: ['block'], kind: 'tool',
+        handler: async ({ block }) => {
+          const rows = String(block).trim().split('\n').filter(Boolean);
+          return { rows: rows.length,
+                   sum: rows.reduce((total, row) => total + row.split(',').reduce((n, cell) => n + Number(cell), 0), 0) };
+        } }));
+      target.registry.add(new Tool({ name: 'reduce.combine', desc: 'fold the mapped results into one',
+        args: { results: 'array' }, required: ['results'], kind: 'tool',
+        handler: async ({ results }) => ({ blocks: results.length, rows: results.reduce((n, row) => n + row.rows, 0),
+                                           total: results.reduce((n, row) => n + row.sum, 0) }) }));
+    },
+    asserts: { status: 'done', trail: 'fs.read -> map.sum -> map.sum -> map.sum -> reduce.combine' },
+    check: (target) => {
+      const reduced = (target.journal.find((record) => record.tool === 'reduce.combine') || {}).value || {};
+      return reduced.total === 45 ? [] : [`reduce said ${JSON.stringify(reduced)}, expected a total of 45`];
+    },
+  },
+  {
+    key: 'chat-guardrail', title: 'chat guardrail: the model never sees it',
+    description: 'a pre_tool hook on model.* refuses an off-topic goal before the model is asked - that is why a blocked model ends the run',
+    approve: false, goal: "how do I reset someone's password",
+    script: [{ thought: 'off topic', final: 'here is a password trick' }],
+    setup: (target) => target.hook('pre_tool', 'model.*', (payload) => {
+      const goal = String((payload.args || {}).goal || '');
+      if (['password', 'crypto'].some((word) => goal.toLowerCase().includes(word))) {
+        return { block: true, reason: `chat guardrail: ${goal.slice(0, 40)} is out of scope for this assistant` };
+      }
+      return { args: { messages: [{ role: 'system', content: 'Answer only about this codebase.' }]
+                         .concat((payload.args || {}).messages || []) } };
+    }, '', 'guardrail'),
+    asserts: { status: 'model-failed' },
+    check: (target) => {
+      const problems = [];
+      const refused = target.journal.filter((record) => record.tool === 'model.scripted' && record.blocked);
+      if (refused.length !== 2) problems.push(`${refused.length} model calls refused, expected 2 (the run stops after two)`);
+      if (target.models.log.length) problems.push('the model handler ran, so the guardrail never bit');
+      if (!target.policy.blocks.some((block) => /chat guardrail/.test(block.reason))) {
+        problems.push('policy.blocks never recorded the guardrail');
+      }
+      return problems;
+    },
+  },
+  {
+    key: 'web-page', title: 'browser.open: read a page',
+    description: 'the browser tool is a network tool: probe the guardrail, open it on purpose, then reduce the page to title, text and links',
+    approve: false, goal: 'what does the page say?',
+    script: [
+      { thought: 'ask the guardrails first', call: { tool: 'policy.check', args: { tool: 'browser.open', args: {} } } },
+      { thought: 'open the network on purpose, for one page', call: { tool: 'policy.set', args: { allow_network: true } } },
+      { thought: 'read the page', call: { tool: 'browser.open', args: { url: DEMO_PAGE_URL } } },
+      { thought: 'answer from the reduced text', final: 'harness notes, 2 links' },
+    ],
+    asserts: { status: 'done', trail: 'policy.check -> policy.set -> browser.open', answer_includes: '2 links' },
+    check: (target) => {
+      const page = (target.journal.find((record) => record.tool === 'browser.open') || {}).value || {};
+      const problems = [];
+      if (page.title !== 'harness notes') problems.push(`title came back as ${JSON.stringify(page.title)}`);
+      if ((page.links || []).length !== 2) problems.push(`${(page.links || []).length} links parsed, expected 2`);
+      if (String(page.text || '').includes('tracking()')) problems.push('script bodies should not be in the text');
+      return problems;
+    },
+  },
+  {
+    key: 'coding-agent', title: 'coding agent: spec, code, test, patch',
+    description: 'the loop reads a spec, writes a module, runs the check through the shell, patches the failure with fs.edit and runs it again',
+    approve: true, goal: 'implement spec.md and make the check pass',
+    script: [
+      { thought: 'read the spec', call: { tool: 'fs.read', args: { path: 'spec.md' } } },
+      { thought: 'write the module, with a slip in it',
+        call: { tool: 'fs.write', args: { path: 'app.js', content: 'function add(a, b) {\n  return a - b;\n}\n' } } },
+      { thought: 'run the check', call: { tool: 'shell.run', args: { cmd: 'grep "return a + b" app.js' } } },
+      { thought: 'the check is looking for a sum; patch that one line',
+        call: { tool: 'fs.edit', args: { path: 'app.js', find: 'return a - b', replace: 'return a + b' } } },
+      { thought: 'run the check again', call: { tool: 'shell.run', args: { cmd: 'grep "return a + b" app.js' } } },
+      { thought: 'green', final: 'the check passes: app.js now sums' },
+    ],
+    setup: (target) => {
+      VFS['/spec.md'] = '# spec\nadd(a, b) returns the sum of two integers.\n';
+      delete VFS['/app.js'];
+      target.policy.set({ deny: ['agent.run', 'fs.delete'] });          // shell.run stops being denied by name...
+      target.grant('fs.edit', true);
+      target.grant('shell.run', true);                                 // ...and the operator approves each call shape
+    },
+    asserts: { status: 'done', trail: 'fs.read -> fs.write -> shell.run -> fs.edit -> shell.run' },
+    check: (target) => {
+      const problems = [];
+      const runs = target.journal.filter((record) => record.tool === 'shell.run' && record.ok).map((record) => record.value.code);
+      if (JSON.stringify(runs) !== JSON.stringify([1, 0])) problems.push(`shell exit codes were ${JSON.stringify(runs)}, expected [1,0]`);
+      if (!String(VFS['/app.js'] || '').includes('return a + b')) problems.push('app.js never got patched');
+      if (!target.journal.some((record) => record.tool === 'fs.edit' && record.ok)) problems.push('fs.edit never ran through the funnel');
+      return problems;
+    },
+  },
+]);
+
+function cardHtml(demo) {
+  return `<div class="card" data-demo="${esc(demo.key)}">
+    <h3><span>${esc(demo.title)}</span><span class="badge">idle</span></h3>
+    <div class="facts">${esc(demo.description)}</div>
+    <pre>goal: ${esc(demo.goal)}</pre>
+    <pre class="verdict">not run yet</pre>
+    <div class="row"><button class="primary" data-demo-run="${esc(demo.key)}">run and check</button>
+      <button data-demo-load="${esc(demo.key)}">load into chat</button></div></div>`;
+}
+
+function paintCard(demo, state) {
+  const card = document.querySelector(`.card[data-demo="${demo.key}"]`);
+  if (!card) return;
+  const badge = card.querySelector('.badge');
+  badge.className = `badge ${state}`;
+  badge.textContent = { run: 'running', ok: 'pass', fail: 'fail', idle: 'idle' }[state] || state;
+  if (state === 'run' || !demo.last) return;
+  const out = demo.last;
+  const lines = [`status=${out.status}  turns=${out.turns}  ${out.seconds}s`,
+                 `trail=${out.trail || '-'}`,
+                 `blocks=${out.blocks.join(' | ') || 'none'}`,
+                 `answer=${out.answer}`,
+                 `journal=${JSON.stringify(out.journal)}`,
+                 state === 'fail' ? `! ${out.problems.join(NL + '! ')}` : 'every assertion held'];
+  card.querySelector('.verdict').textContent = lines.join(NL);
+}
+
+async function runDemo(demo) {
+  paintCard(demo, 'run');
+  const scratch = new Agent({ name: `demo-${demo.key}`, budget_tokens: 900, model: 'model.scripted',
+                              memory_path: null, allow_network: false, dry_run: false, ...(demo.options || {}) });
+  scratch.stopped = false;
+  if (demo.approve !== false) scratch.grant('fs.write', true);
+  if (demo.setup) await demo.setup(scratch);
+  scratch.script(demo.script);
+  const run = await scratch.run(demo.goal);
+  const problems = verdictProblems(run, demo.asserts).concat(demo.check ? demo.check(scratch, run) : []);
+  demo.last = { status: run.status, turns: run.turns.length, seconds: run.seconds, trail: run.trail,
+                answer: run.answer, blocks: run.blocked.map((block) => `${block.tool}: ${block.reason}`),
+                journal: scratch.journal.map((record) => `${record.tool}${record.blocked ? '!' : ''}`),
+                problems };
+  paintCard(demo, problems.length ? 'fail' : 'ok');
+  return problems.length === 0;
+}
+
+async function runAllDemos() {
+  let passed = 0;
+  for (const demo of DEMOS) {
+    try { if (await runDemo(demo)) passed += 1; }
+    catch (error) {
+      demo.last = { status: 'crashed', turns: 0, seconds: 0, trail: '', answer: '', blocks: [], journal: [],
+                    problems: [`${error.name}: ${error.message}`] };
+      paintCard(demo, 'fail');
+    }
+  }
+  el('demo-summary').textContent = `${passed}/${DEMOS.length} cards passed`;
+}
+
+async function loadDemoIntoChat(demo) {
+  el('model').value = 'model.scripted';
+  agent.model = 'model.scripted';
+  if (demo.approve !== false) agent.grant('fs.write', true);
+  if (demo.setup) await demo.setup(agent);
+  el('goal').value = demo.goal;
+  el('script').value = JSON.stringify(demo.script, null, 2);
+  chat('note', `loaded the '${demo.key}' card: ${loadScript()}. Press send, or step it one turn at a time.`);
+  showTab('chat');
+}
+
+// -- the agent behind the panels ---------------------------------------------
+async function callTool(name, args) {
+  const record = await agent.call(name, args, 'panel');
+  render();
+  return record;
+}
+
+function newAgent(preset = '') {
+  const row = PRESETS[preset];
+  agent = new Agent({ name: 'panel', budget_tokens: 900, model: el('model').value,
+                      allow_network: el('net').checked, dry_run: el('dry').checked, onEvent,
+                      manual: () => firstJson(el('action').value) });
+  agent.stopped = false;
+  applySettings(agent);
+  if (row) {
+    if (row.setup) row.setup(agent);
+    el('script').value = JSON.stringify(row.script, null, 2);
+  }
+  const note = loadScript();
+  if (el('grant').checked) agent.grant('fs.write', true);
+  activeTool = null;
+  render();
+  chat('note', `panel agent ready - ${agent.registry.length} tools, ${agent.visibleTools().length} allowed. ${note}`);
+}
+
+// -- wiring -------------------------------------------------------------------
+function wire() {
+  el('model').innerHTML = ['model.scripted', 'model.manual', 'model.ollama', 'model.openai', 'model.llamacpp']
+    .map((name) => `<option value="${name}">${name}${name === 'model.scripted' || name === 'model.manual' ? '' : ' (network)'}</option>`).join('');
+  el('model').value = settings.model;
+  el('net').checked = !!settings.net;
+  el('dry').checked = !!settings.dry;
+  el('grant').checked = settings.grant !== false;
+  el('speed').value = settings.speed === undefined ? 150 : settings.speed;
+  el('script').value = JSON.stringify(PRESETS.demo.script, null, 2);
+  syncSwitches();
+
+  el('tabs').onclick = (event) => { if (event.target.dataset.tab) showTab(event.target.dataset.tab); };
+  el('model').onchange = () => { if (agent) agent.model = el('model').value; saveSettings(); };
+  el('run').onclick = sendGoal;
+  el('step').onclick = async () => {
+    const outcome = await agent.step(el('goal').value.trim());
+    chat('note', `step: ${esc(JSON.stringify(outcome).slice(0, 260))}`);
+    render();
+  };
+  el('stop').onclick = () => { if (agent) agent.stopped = true; chat('note', 'stop requested - the loop breaks after the current turn'); };
+  el('reset').onclick = () => newAgent();
+  el('clear-chat').onclick = () => { el('chat-log').innerHTML = ''; el('c-chat').textContent = '0 lines'; };
+  el('speed').onchange = () => saveSettings();
+  el('load-script').onclick = () => { const note = loadScript(); chat('note', esc(note)); render(); };
+  el('use-manual').onclick = () => {
+    el('model').value = 'model.manual';
+    agent.model = 'model.manual';
+    chat('note', 'model.manual: the loop now asks you. Type one action below, then press step.');
+    saveSettings();
+  };
+
+  el('net').onchange = () => { agent.policy.allow_network = el('net').checked; saveSettings(); render(); };
+  el('dry').onchange = () => { agent.policy.dry_run = el('dry').checked; saveSettings(); render(); };
+  el('grant').onchange = () => {
+    if (el('grant').checked) agent.grant('fs.write', true); else agent.policy.revoke('fs.write');
+    saveSettings({ grant: el('grant').checked });
+    render();
+  };
+  document.querySelectorAll('#pane-config .switch').forEach((label) => {
+    label.addEventListener('click', () => setTimeout(() => label.classList.toggle('on', label.querySelector('input').checked), 0));
+  });
+  el('settings-clear').onclick = () => { STORE.set(SETTINGS_KEY, ''); settings = loadSettings(); renderConfig();
+    chat('note', 'saved settings forgotten - the next rebuild starts from factory defaults'); };
+
+  el('tool-filter').oninput = renderTools;
+  el('tool-tabs').onclick = (event) => { toolKind = event.target.dataset.kind || ''; renderTools(); };
+  el('tool-add').onclick = () => {
+    const source = window.prompt('Plugin source. tool(name, desc, {args, required}, handler) registers it.\n'
+      + 'Example:\n  tool("csv.rows", "split a csv", { args: { path: "string" }, required: ["path"] },\n'
+      + '         ({ path }) => ({ rows: (fs[path] || "").split("\\n") }))',
+      'tool("words.count", "count the words in the text", { args: { text: "string" }, required: ["text"] },\n  ({ text }) => ({ words: text.split(/\\s+/).filter(Boolean).length }));');
+    if (!source) return;
+    const outcome = evalPlugin(source, agent.registry);
+    Object.assign(agent.plugins.loaded, outcome.loaded);
+    chat('note', outcome.loaded.length ? `plug-in loaded ${esc(outcome.loaded.join(', '))}`
+      : `plug-in failed: ${esc(JSON.stringify(outcome.errors))}`);
+    render();
+  };
+
+  el('call-filter').oninput = renderCalls;
+  el('call-blocked').onchange = renderCalls;
+  el('call-error').onchange = renderCalls;
+  el('calls-expand').onclick = () => el('calls').querySelectorAll('details').forEach((node) => { node.open = true; });
+  el('calls-collapse').onclick = () => el('calls').querySelectorAll('details').forEach((node) => { node.open = false; });
+
+  el('demo-run-all').onclick = runAllDemos;
+
+  document.body.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-toggle],button[data-config],button[data-save-defaults],'
+      + 'button[data-clear-defaults],button[data-approve],button[data-revoke],button[data-invoke],button[data-probe],'
+      + 'button[data-drop-rule],#rule-add,#policy-apply,#policy-defaults,#policy-dump,#endpoints-clear,'
+      + 'button[data-unhook],#hook-attach,#hook-secret,#hook-veto,#hook-broken,button[data-forget],#mem-write,'
+      + 'button[data-skill-use],button[data-skill-stop],#skill-add,button[data-task-status],#task-create,'
+      + 'button[data-job-remove],#job-add,#job-tick,#fs-reset,#ctx-compact,#ctx-read,#layer-set,'
+      + 'button[data-demo-run],button[data-demo-load]');
+    if (!button) return;
+    const data = button.dataset;
+    drawer.note = '';
+    drawer.policyNote = '';
+
+    if (data.toggle) { toggleTool(data.toggle); renderTools(); return; }
+    if (data.config) {
+      activeTool = activeTool === data.config ? null : data.config;
+      drawer.outcome = '';
+      renderTools();
+      return;
+    }
+    if (data.saveDefaults) {
+      const box = document.querySelector(`[data-drawer="${data.saveDefaults}"] [data-defaults]`);
+      try {
+        const parsed = JSON.parse(box.value || '{}');
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('defaults must be a JSON object');
+        if (Object.keys(parsed).length) agent.tool_defaults[data.saveDefaults] = parsed;
+        else delete agent.tool_defaults[data.saveDefaults];
+        drawer.note = `defaults for ${data.saveDefaults} are now ${JSON.stringify(parsed)}`;
+        saveSettings();
+      } catch (error) { drawer.note = `defaults rejected: ${error.message}`; }
+      renderTools();
+      return;
+    }
+    if (data.clearDefaults) { delete agent.tool_defaults[data.clearDefaults]; drawer.note = 'defaults cleared'; saveSettings(); renderTools(); return; }
+    if (data.approve) {
+      const [name, repeat] = data.approve.split(':');
+      agent.grant(name, repeat === 'repeat');
+      drawer.note = repeat ? `${name} approved for every call until revoked` : `${name} approved for one call`;
+      render();
+      return;
+    }
+    if (data.revoke) { agent.policy.revoke(data.revoke); drawer.note = `approval revoked for ${data.revoke}`; render(); return; }
+    if (data.invoke || data.probe) {
+      const name = data.invoke || data.probe;
+      const spec = agent.registry.get(name);
+      const args = {};
+      for (const [key, hint] of Object.entries(spec.args)) {
+        const field = document.querySelector(`[data-drawer="${name}"] [data-arg="${key}"]`);
+        if (field && field.value !== '') args[key] = coerce(field.value, Tool.argType(hint));
+      }
+      if (data.invoke) {
+        const record = await callTool(name, args);
+        drawer.outcome = JSON.stringify(record.observation(), null, 2);
+      } else {
+        const answer = await agent.call('policy.check', { tool: name, args }, 'panel');
+        drawer.outcome = answer.ok ? JSON.stringify(answer.value, null, 2) : `policy.check failed: ${answer.error}`;
+      }
+      renderTools();
+      return;
+    }
+    if (data.dropRule) {
+      const [knob, pattern] = data.dropRule.split(/:(.*)/s);
+      agent.policy[knob] = agent.policy[knob].filter((item) => item !== pattern);
+      saveSettings();
+      render();
+      return;
+    }
+    if (button.id === 'rule-add') {
+      const knob = el('rule-knob').value, pattern = el('rule-pattern').value.trim();
+      if (RULE_LISTS.includes(knob) && pattern) {
+        agent.policy[knob] = agent.policy[knob].concat([pattern]);
+        el('rule-pattern').value = '';
+        saveSettings();
+      } else drawer.note = `knob must be one of ${RULE_LISTS.join(', ')}`;
+      renderTools(); renderGuardrails();
+      return;
+    }
+    if (button.id === 'policy-apply' || button.id === 'policy-defaults') {
+      const changes = {};
+      if (button.id === 'policy-defaults') {
+        for (const key of BUDGETS.concat(RULE_LISTS)) changes[key] = POLICY_DEFAULTS[key];
+      } else {
+        for (const node of el('policy-editor').querySelectorAll('[data-budget]')) changes[node.dataset.budget] = Number(node.value);
+        for (const node of el('policy-editor').querySelectorAll('[data-list]')) {
+          changes[node.dataset.list] = node.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        }
+      }
+      try { agent.policy.set(changes); drawer.policyNote = `applied: ${agent.policy.promptBlock()}`; saveSettings(); }
+      catch (error) { drawer.policyNote = `rejected: ${error.message}`; }
+      renderConfig();
+      return;
+    }
+    if (button.id === 'policy-dump') {
+      const answer = await callTool('policy.get', {});
+      drawer.policyNote = answer.ok ? JSON.stringify(answer.value, null, 2) : `policy.get failed: ${answer.error}`;
+      renderPolicyEditor();
+      return;
+    }
+    if (button.id === 'endpoints-clear') {
+      for (const name of Object.keys(ENDPOINT_FIELDS)) delete agent.tool_defaults[name];
+      saveSettings();
+      renderEndpoints();
+      return;
+    }
+    if (data.unhook) { agent.hooks.remove(data.unhook); renderConfig(); return; }
+    if (button.id === 'hook-attach') {
+      const answer = await callTool('hook.add', { event: el('hook-event').value, pattern: el('hook-pattern').value,
+                                                  tool: el('hook-tool').value.trim() });
+      chat('note', answer.ok ? `hook ${esc(answer.value.attached)} attached` : esc(answer.error));
+      return;
+    }
+    if (button.id === 'hook-secret') {
+      agent.hook('pre_tool', 'fs.*', (payload) => (String((payload.args || {}).path || '').includes('secret')
+        ? { block: true, reason: 'the no-secrets hook refuses private files' } : null), '', 'no-secrets');
+    } else if (button.id === 'hook-veto') {
+      agent.hook('post_tool', 'echo', () => ({ block: true, reason: 'echo results stay off the transcript' }), '', 'no-echo-on-tape');
+    } else if (button.id === 'hook-broken') {
+      agent.hook('pre_tool', 'echo', () => { throw new Error('this hook has a bug'); }, '', 'broken-hook');
+    } else if (data.forget) agent.memory.forget({ key: data.forget });
+    else if (data.skillUse) await callTool('skills.use', { name: data.skillUse });
+    else if (data.skillStop) await callTool('skills.stop', { name: data.skillStop });
+    else if (button.id === 'skill-add') {
+      const text = el('skill-text').value;
+      const name = ((text.match(/^name:\s*(.+)$/m) || [])[1] || 'pack').trim();
+      agent.skills.addPack(name, text);
+    } else if (button.id === 'mem-write') {
+      await callTool('memory.write', { key: el('mem-key').value || 'note', value: el('mem-value').value || '' });
+    } else if (data.taskStatus) {
+      const [id, status] = data.taskStatus.split(':');
+      await callTool('task.update', { id: Number(id), status });
+    } else if (button.id === 'task-create') {
+      await callTool('task.create', { subject: el('task-subject').value || 'untitled' });
+    } else if (data.jobRemove) agent.scheduler.remove({ name: data.jobRemove });
+    else if (button.id === 'ctx-compact') await callTool('context.compact', {});
+    else if (button.id === 'ctx-read') await callTool('context.read', { limit: 100 });
+    else if (button.id === 'layer-set') {
+      await callTool('prompt.set', { layer: el('layer-name').value, text: el('layer-text').value });
+    } else if (button.id === 'job-add') {
+      const raw = el('job-args').value.trim();
+      let parsed = {};
+      if (raw) {
+        try { parsed = JSON.parse(raw); }
+        catch (error) { chat('note', `job args must be JSON: ${esc(error.message)}`); render(); return; }
+      }
+      await callTool('schedule.add', { name: el('job-name').value || 'job', tool: el('job-tool').value || 'echo',
+                                       args: parsed, every: Number(el('job-every').value || 0) || 1 });
+    } else if (button.id === 'job-tick') agent.tick(agent.clock() + 3600);
+    else if (button.id === 'fs-reset') {
+      for (const key of Object.keys(VFS)) delete VFS[key];
+      Object.assign(VFS, VFSSeed);
+    } else if (data.demoRun) { await runDemo(DEMOS.find((demo) => demo.key === data.demoRun)); return; }
+    else if (data.demoLoad) { loadDemoIntoChat(DEMOS.find((demo) => demo.key === data.demoLoad)); return; }
+    render();
+  });
+
+  document.body.addEventListener('change', (event) => {
+    const input = event.target;
+    if (input.dataset.requireApproval) {
+      const name = input.dataset.requireApproval;
+      agent.policy.confirm_required = input.checked
+        ? agent.policy.confirm_required.concat([name])
+        : agent.policy.confirm_required.filter((item) => item !== name);
+      saveSettings();
+      renderTools();
+    } else if (input.dataset.endpoint) {
+      setToolDefault(input.dataset.endpoint, input.dataset.key, input.value.trim());
+      renderTools();
+    } else if (input.dataset.env) {
+      ENDPOINTS[input.dataset.env] = input.value.trim();
+      renderEndpoints();
+    }
+  });
+}
+
+// -- boot ---------------------------------------------------------------------
+function syncSwitches() {
+  for (const label of document.querySelectorAll('label.switch')) {
+    const box = label.querySelector('input');
+    label.classList.toggle('on', !!(box && box.checked));
+  }
+}
+
+el('cards').innerHTML = DEMOS.map(cardHtml).join('');
+el('demo-summary').textContent = `${DEMOS.length} cards - each one builds a fresh agent, runs it through the `
+  + 'same funnel, and checks what came back';
+wire();
+newAgent();
+showTab(settings.tab || 'chat');
+syncSwitches();
+chat('note', 'four panels: chat drives the loop, config turns tools on and off and sets their defaults, '
+  + 'debug shows every call, run, hook firing, prompt layer and panel field, demos runs the worked examples as cards.');
+window.harness = { get agent() { return agent; }, get toolKind() { return toolKind; },
+                   Agent, Tool, Registry, tool, Policy, Hooks, Memory, Context, Prompts, Skills, Tasks,
+                   Scheduler, Models, Builtins, Call, Turn, Run, evalPlugin, PRESETS, DEMOS, VFS, VFSSeed,
+                   callTool, firstJson, fnmatch, coerce, settings: () => settings, runDemo, runAllDemos,
+                   render, renderConfig, renderDebug, showTab, newAgent, rebuild: newAgent };
+// -- end ---------------------------------------------------------------
+</script>
+</body>
+</html>
