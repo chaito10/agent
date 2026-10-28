@@ -10,6 +10,7 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -162,6 +163,23 @@ suite('policy', (test) => {
     const [ok, reason] = agent.policy.check(agent.registry.get('fs.read'), {});
     assert.strictEqual(ok, false);
     assert.match(reason, /allow list/);
+  });
+
+  test('the operator is never locked out of the guardrails', async () => {
+    // a hand-typed allow list can forget policy.set itself; that must not strand the
+    // panel, while every model-driven call to the same tool keeps obeying the rule
+    const agent = makeAgent();
+    agent.policy.set({ allow: ['policy.allow_network'] });
+    const blocked = await agent.call('policy.set', { allow_network: true }, 'model');
+    assert.ok(blocked.blocked);
+    assert.match(blocked.reason, /allow list/);
+    const freed = await agent.call('policy.set', { allow: [] }, 'panel');
+    assert.ok(freed.ok, freed.reason);
+    assert.deepStrictEqual(agent.policy.allow, []);
+    // dry-run blocks every mutating tool, policy.set included
+    await agent.call('policy.set', { dry_run: true }, 'panel');
+    assert.ok((await agent.call('fs.write', { path: 'a.txt', text: 'x' })).blocked);
+    assert.ok((await agent.call('policy.set', { dry_run: false }, 'panel')).ok);
   });
 
   test('network tools are refused until allow_network', async () => {
@@ -696,15 +714,62 @@ suite('models', (test) => {
   });
 
   test('chatml rendering is what llamacpp would send', () => {
-    assert.strictEqual(H.renderChatml([{ role: 'system', content: 'hi' }]), 'system: hi\n\nassistant:');
-    // each turn ends with a blank line, and the join adds the separator between them
-    assert.strictEqual(H.renderChatml([{ role: 'system', content: 'a' }, { role: 'user', content: 'b' }]),
-      'system: a\n\n' + '\n' + 'user: b\n\n' + 'assistant:');
+    const { CHATML_START, CHATML_MESSAGE, CHATML_END } = H;
+    assert.strictEqual(H.renderChatml([{ role: 'system', content: 'hi' }]),
+      CHATML_START + 'system' + CHATML_MESSAGE + 'hi' + CHATML_END + CHATML_START + 'assistant' + CHATML_MESSAGE);
+    const two = H.renderChatml([{ role: 'system', content: 'a' }, { role: 'user', content: 'b' }]);
+    assert.ok(two.includes('user' + CHATML_MESSAGE + 'b' + CHATML_END));
+    assert.ok(!two.includes('system: a'));   // the old plain-role template is gone
+  });
+
+  test('llamacpp posts the model name a router-mode server demands', async () => {
+    let seen = null;
+    const server = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        seen = JSON.parse(raw);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        // a real server hands back the reply plus the terminator it stopped on
+        res.end(JSON.stringify({ content: '{"thought": "48", "final": "48"}' + H.CHATML_END }));
+      });
+    });
+    await new Promise((done) => server.listen(0, '127.0.0.1', done));
+    const agent = makeAgent();
+    agent.policy.set({ allow_network: true });
+    try {
+      const record = await agent.call('model.llamacpp', {
+        base_url: `http://127.0.0.1:${server.address().port}`, model: 'tiny:Q4_K_M',
+        messages: [{ role: 'system', content: 'be brief' }, { role: 'user', content: '12 * 4' },
+                   { role: 'user', content: 'observation: echo said hi' }], goal: '12 * 4' });
+      assert.ok(record.ok, record.error);
+      assert.deepStrictEqual(record.value, { thought: '48', final: '48' });
+      assert.strictEqual(seen.model, 'tiny:Q4_K_M');
+      assert.ok(seen.prompt.startsWith(H.CHATML_START));
+      assert.ok(seen.prompt.includes('observation: echo said hi'));  // the window is not dropped
+      assert.deepStrictEqual(seen.stop, H.CHATML_STOPS);
+      // a stringified schema is a 400 on llama.cpp: it wants the object itself
+      assert.strictEqual(typeof seen.json_schema, 'object');
+      assert.deepStrictEqual(seen.json_schema.required, ['thought']);
+    } finally { server.close(); }
   });
 });
 
 // ---------------------------------------------------------------------------
 suite('loop', (test) => {
+  test('the window carries the action, not just its thought', async () => {
+    // a completion endpoint continues from the assistant turn: if the window only
+    // holds the thought, the model repeats its last tool call forever
+    const agent = makeAgent();
+    agent.script([{ thought: 'say hi', call: { tool: 'echo', args: { text: 'hi' } } },
+                  { thought: 'done', final: 'echo said hi' }]);
+    const run = await agent.run('echo once');
+    assert.strictEqual(run.status, 'done');
+    const assistant = agent.context.asMessages().filter((m) => m.role === 'assistant');
+    assert.ok(assistant[0].content.includes('"call"'));
+    assert.ok(assistant[0].content.includes('echo'));
+  });
+
   test('steps run out rather than spinning', async () => {
     const agent = makeAgent();
     agent.script([{ call: { tool: 'echo', args: { text: 'again' } } }]);

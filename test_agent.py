@@ -1,6 +1,7 @@
 """Tests for agent.py — python -m unittest -v test_agent"""
 
 import contextlib
+import http.server
 import io
 import json
 import os
@@ -8,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -115,6 +117,22 @@ class PolicyTest(unittest.TestCase):
         ok, reason = self.agent.policy.check(self.agent.registry.get("memory.list"), {})
         self.assertFalse(ok)
         self.assertIn("allow list", reason)
+
+    def test_the_operator_is_never_locked_out_of_the_guardrails(self):
+        # a hand-typed allow list can forget policy.set itself; that must not strand the
+        # panel, while every model-driven call to the same tool keeps obeying the rule
+        self.agent.policy.set(allow=["policy.allow_network"])
+        blocked = self.agent.call("policy.set", {"allow_network": True}, source="model")
+        self.assertTrue(blocked.blocked)
+        self.assertIn("allow list", blocked.reason)
+        freed = self.agent.call("policy.set", {"allow": []}, source="panel")
+        self.assertTrue(freed.ok, freed.reason)
+        self.assertEqual(self.agent.policy.allow, [])
+        self.assertTrue(self.agent.call("echo", {"text": "hi"}).ok)
+        # dry-run blocks every mutating tool, policy.set included
+        self.agent.call("policy.set", {"dry_run": True}, source="panel")
+        self.assertTrue(self.agent.call("fs.write", {"path": "a.txt", "text": "x"}).blocked)
+        self.assertTrue(self.agent.call("policy.set", {"dry_run": False}, source="panel").ok)
 
     def test_paths_outside_the_sandbox_are_refused(self):
         ok, reason = self.agent.policy.check(self.agent.registry.get("fs.read"), {"path": "../../etc/passwd"})
@@ -618,7 +636,56 @@ class ModelsTest(unittest.TestCase):
             models._action_from("I think we should stop")
 
     def test_chatml_render(self):
-        self.assertEqual(A.render_chatml([{"role": "system", "content": "hi"}]), "system: hi\n\nassistant:")
+        start, message, end = A.CHATML_START, A.CHATML_MESSAGE, A.CHATML_END
+        self.assertEqual(A.render_chatml([{"role": "system", "content": "hi"}]),
+                         start + "system" + message + "hi" + end + start + "assistant" + message)
+        two = A.render_chatml([{"role": "system", "content": "a"}, {"role": "user", "content": "b"}])
+        self.assertEqual(two, start + "system" + message + "a" + end
+                            + start + "user" + message + "b" + end
+                            + start + "assistant" + message)
+        self.assertNotIn("system: a", two)  # the old plain-role template is gone
+
+    def test_llamacpp_posts_the_model_name_and_a_chatml_prompt(self):
+        """A router-mode llama-server rejects a request that does not name a model."""
+        seen = {}
+
+        class Stub(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 - http.server's spelling
+                seen.update(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                # a real server hands back the reply plus the terminator it stopped on
+                body = json.dumps({"content": '{"thought": "48", "final": "48"}' + A.CHATML_END}).encode()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):  # keep the test output clean
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Stub)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            self.agent.call("policy.set", {"allow_network": True})
+            record = self.agent.call("model.llamacpp", {
+                "base_url": f"http://127.0.0.1:{server.server_port}", "model": "tiny:Q4_K_M",
+                "messages": [{"role": "system", "content": "be brief"},
+                             {"role": "user", "content": "12 * 4"},
+                             {"role": "user", "content": "observation: echo said hi"}],
+                "goal": "12 * 4"})
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertTrue(record.ok, record.error)
+        self.assertEqual(record.value, {"thought": "48", "final": "48"})
+        self.assertEqual(seen["model"], "tiny:Q4_K_M")
+        self.assertTrue(seen["prompt"].startswith(A.CHATML_START))
+        # the whole window goes into the prompt, not just the system message
+        self.assertIn("observation: echo said hi", seen["prompt"])
+        self.assertEqual(seen["stop"], A.CHATML_STOPS)
+        # a stringified schema is a 400 on llama.cpp: it wants the object itself
+        self.assertIsInstance(seen["json_schema"], dict)
+        self.assertEqual(seen["json_schema"]["required"], ["thought"])
 
     def test_network_models_are_guardrailed_by_default(self):
         for name in ("model.ollama", "model.openai", "model.llamacpp"):
@@ -647,6 +714,17 @@ class ModelsTest(unittest.TestCase):
 class LoopTest(unittest.TestCase):
     def setUp(self):
         self.agent = make_agent()
+
+    def test_the_window_carries_the_action_not_just_its_thought(self):
+        # a completion endpoint continues from the assistant turn: if the window only
+        # holds the thought, the model repeats its last tool call forever
+        self.agent.script([{"thought": "say hi", "call": {"tool": "echo", "args": {"text": "hi"}}},
+                           {"thought": "done", "final": "echo said hi"}])
+        run = self.agent.run("echo once")
+        self.assertEqual(run.status, "done")
+        assistant = [m for m in self.agent.context.as_messages() if m["role"] == "assistant"]
+        self.assertIn('"call"', assistant[0]["content"])
+        self.assertIn("echo", assistant[0]["content"])
 
     def test_run_follows_the_script(self):
         self.agent.script([{"thought": "first", "call": {"tool": "echo", "args": {"text": "a"}}},

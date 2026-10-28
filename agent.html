@@ -103,6 +103,7 @@
   .msg.assistant { align-self: flex-start; background: #14211b; border: 1px solid #2b5c45; }
   .msg.thought, .msg.note { align-self: flex-start; color: var(--dim); font: 11px var(--mono); max-width: 92%; }
   .msg.note { align-self: center; }
+  .msg.warn { align-self: flex-start; color: var(--warn); font: 11px var(--mono); max-width: 92%; }
   .msg.call { align-self: stretch; max-width: 98%; font: 11px var(--mono); background: #131920;
               border: 1px solid var(--edge); border-radius: 6px; padding: 3px 8px; }
   .msg.call.ok { border-left: 3px solid var(--ok); }
@@ -147,6 +148,60 @@
   .card h3 { margin: 0; font: 600 13px var(--mono); display: flex; justify-content: space-between; gap: 8px; align-items: center; }
   .card .facts { font: 11px var(--mono); color: var(--dim); }
   .card pre.verdict { min-height: 26px; max-height: 150px; overflow: auto; color: var(--dim); }
+  [hidden] { display: none !important; }
+  details.cfg { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; margin-bottom: 8px; }
+  details.cfg > summary { cursor: pointer; padding: 8px 10px; font: 600 11px var(--mono); letter-spacing: 1.2px;
+                          text-transform: uppercase; color: var(--dim); }
+  details.cfg > summary .count { color: var(--accent); margin-left: 8px; text-transform: none; letter-spacing: 0; }
+  details.cfg > .inner { padding: 2px 10px 10px; }
+  .setting { border-top: 1px solid #1d242b; padding: 6px 0; font: 11px var(--mono); }
+  .knobrow { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+  .chip .x { background: none; border: 0; color: var(--bad); padding: 0 0 0 5px; cursor: pointer; font-size: 12px; }
+  .warnbox { border: 1px solid var(--warn); background: #231d12; color: var(--warn); border-radius: 6px;
+             padding: 7px 10px; margin-bottom: 8px; font: 11px var(--mono); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #cfg-search { font-size: 13px; padding: 7px 9px; flex: 1 1 280px; }
+
+  /* ---- polish ---- */
+  :root { --bg: #0d1117; --panel: #141a22; --edge: #232d38; --ink: #e2e9f0; --dim: #8497a8;
+          --ok: #56c596; --warn: #e5ad55; --bad: #ec6b72; --accent: #6bb3f0;
+          --sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif; }
+  html { color-scheme: dark; scroll-behavior: smooth; }
+  body { font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  header { gap: 10px; padding: 10px 18px; background: rgba(20,26,34,.88); backdrop-filter: blur(8px); }
+  header h1 { font: 600 15px var(--sans); letter-spacing: 0; margin-right: 6px; }
+  header h1::before { content: ''; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+                      background: var(--accent); margin-right: 8px; box-shadow: 0 0 10px var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px 18px 40px; }
+  button { background: #1b2530; border-radius: 6px; padding: 6px 12px; transition: border-color .12s, background .12s, transform .05s; }
+  button:hover { background: #212d3a; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #1f4a6d; border-color: #3b86bd; }
+  button.primary:hover { background: #255b85; }
+  input[type=text], input[type=number], select, textarea { border-radius: 6px; padding: 6px 9px; transition: border-color .12s, box-shadow .12s; }
+  input:focus, select:focus, textarea:focus, button:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(107,179,240,.18); }
+  nav.tabs { background: #0d1117; border: 1px solid var(--edge); border-radius: 999px; padding: 3px; gap: 2px; }
+  nav.tabs button { border: 0; background: transparent; padding: 5px 16px; font: 500 12px var(--sans); color: var(--dim); }
+  nav.tabs button.on { background: #1d2a37; color: var(--ink); box-shadow: inset 0 0 0 1px var(--accent); }
+  #net-pill { border-radius: 999px; font: 500 11px var(--sans); padding: 4px 12px; }
+  #net-pill.on { border-color: var(--ok); color: var(--ok); }
+  #net-pill.off { color: var(--dim); }
+  #status { margin-left: auto; }
+  section, details.cfg, .composer, .chat-log, .card { border-radius: 10px; }
+  .chat-log { padding: 16px; gap: 8px; }
+  .msg { padding: 8px 13px; border-radius: 14px; line-height: 1.5; }
+  .msg.user { border-bottom-right-radius: 4px; }
+  .msg.assistant { border-bottom-left-radius: 4px; }
+  textarea#goal { font: 14px var(--sans); }
+  details.cfg > summary { font: 600 12px var(--sans); letter-spacing: .3px; text-transform: none; color: var(--ink); padding: 11px 14px; list-style: none; }
+  details.cfg > summary::before { content: '\25B8'; display: inline-block; width: 14px; color: var(--dim); transition: transform .12s; }
+  details.cfg[open] > summary::before { transform: rotate(90deg); }
+  details.cfg > .inner { padding: 0 14px 12px; }
+  .setting { padding: 9px 0; }
+  .setting b { font-weight: 600; }
+  #cfg-search { border-radius: 999px; padding: 9px 16px; }
+  .chip { background: #1b2530; padding: 2px 10px; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; } ::-webkit-scrollbar-thumb { background: #263241; border-radius: 9px; }
+  .card:hover { border-color: #33475a; }
   footer { padding: 8px 14px 18px; color: var(--dim); font: 11px var(--mono); }
 </style>
 </head>
@@ -160,6 +215,7 @@
     <button data-tab="demos">demos</button>
   </nav>
   <label class="check">model <select id="model" aria-label="model"></select></label>
+  <button id="net-pill" class="off" title="toggle allow network">network off</button>
   <button class="danger" id="stop">stop</button>
   <button id="reset">reset</button>
   <span class="tag" id="status">idle</span>
@@ -197,35 +253,35 @@
 
   <!-- 2 - configuration and settings -------------------------------------- -->
   <section class="pane" id="pane-config">
-    <div class="row" style="padding:0 2px 10px">
-      <label class="switch" id="sw-net"><input type="checkbox" id="net"><i></i>allow network</label>
-      <label class="switch" id="sw-dry"><input type="checkbox" id="dry"><i></i>dry run</label>
-      <label class="switch" id="sw-grant"><input type="checkbox" id="grant"><i></i>auto-approve fs.write</label>
+    <div class="row" style="padding:0 2px 6px">
+      <input id="cfg-search" type="text" placeholder="search settings, tools, rules, endpoints, hooks, skills..." aria-label="search settings">
       <button id="settings-clear">forget saved settings</button>
       <span class="tag" id="settings-note"></span>
     </div>
-    <div class="grid2">
-      <section><h2>tools <span class="count" id="c-tools"></span></h2>
-        <div class="body">
-          <div class="tabs" id="tool-tabs"></div>
-          <div class="row"><input id="tool-filter" type="text" placeholder="filter by name" style="flex:1">
-            <button id="tool-add">add a plug-in tool</button></div>
-          <div id="tools"></div>
-        </div>
-      </section>
-      <div>
-        <section><h2>control and guard rails <span class="count" id="c-blocks"></span></h2>
-          <div class="body" id="guardrails"></div></section>
-        <section><h2>budgets + rules <span class="count">policy.set</span></h2>
-          <div class="body" id="policy-editor"></div></section>
-      </div>
-      <section><h2>hooks <span class="count" id="c-hooks"></span></h2>
-        <div class="body" id="hooks"></div></section>
-      <section><h2>skills <span class="count" id="c-skills"></span></h2>
-        <div class="body" id="skills"></div></section>
-      <section><h2>model endpoints <span class="count">stored as tool defaults</span></h2>
-        <div class="body" id="endpoints"></div></section>
+    <div class="row" style="padding:0 2px 8px">
+      <label class="switch" id="sw-net"><input type="checkbox" id="net"><i></i>allow network</label>
+      <label class="switch" id="sw-dry"><input type="checkbox" id="dry"><i></i>dry run</label>
+      <label class="switch" id="sw-grant"><input type="checkbox" id="grant"><i></i>auto-approve fs.write</label>
+      <span class="tag" id="cfg-msg"></span>
     </div>
+    <div id="cfg-warn"></div>
+    <details class="cfg" open><summary>model <span class="count">where the brain runs</span></summary>
+      <div class="inner" id="endpoints"></div></details>
+    <details class="cfg" open><summary>tools <span class="count" id="c-tools"></span></summary>
+      <div class="inner">
+        <div class="tabs" id="tool-tabs"></div>
+        <div class="row"><button id="tool-add">add a plug-in tool</button></div>
+        <div id="tools"></div>
+      </div></details>
+    <details class="cfg"><summary>rules <span class="count" id="c-blocks"></span></summary>
+      <div class="inner" id="guardrails"></div></details>
+    <details class="cfg"><summary>limits <span class="count">per run</span></summary>
+      <div class="inner" id="policy-editor"></div></details>
+    <details class="cfg"><summary>hooks <span class="count" id="c-hooks"></span></summary>
+      <div class="inner" id="hooks"></div></details>
+    <details class="cfg"><summary>skills <span class="count" id="c-skills"></span></summary>
+      <div class="inner" id="skills"></div></details>
+    <div class="empty" id="cfg-empty" hidden>nothing matches that search</div>
   </section>
 
   <!-- 3 - everything the loop did, visible ------------------------------- -->
@@ -643,8 +699,9 @@ class Policy {
     for (const pattern of this.deny) {
       if (fnmatch(name, pattern)) return this.block(name, `denied by guardrail rule '${pattern}'`);
     }
-    if (this.allow.length && !matchesAny(name, this.allow)) {
-      return this.block(name, `not in the allow list ${JSON.stringify(this.allow)}`);
+    if (this.allow.length && spec.kind !== 'model' && !matchesAny(name, this.allow)) {
+      return this.block(name, `not in the allow list ${JSON.stringify(this.allow)} - an allow list blocks every tool `
+        + 'not on it; clear it in config > rules (use the network switch for network)');
     }
     if (spec.network && !this.allow_network) {
       return this.block(name, 'network tools are off (set policy.allow_network=True)');
@@ -1347,16 +1404,22 @@ class Models {
   async llamacpp({ messages = null, tools = null, goal = '', step = 0, base_url: baseUrl = '', model = '',
                    temperature = 0.1, n_predict: nPredict = 400 } = {}) {
     const base = baseUrl || this.env.LLAMACPP_URL || 'http://127.0.0.1:8080';
-    const toolList = (tools || []).filter((name) => this.registry.has(name))
+    // llama.cpp rejects an empty enum with a 400, so a call that names no tools gets a plain string instead
+    const names = (tools || []).filter((name) => this.registry.has(name));
+    const toolList = names
       .map((name) => `- ${name}: ${this.registry.tools[name].desc}`).join(NL);
-    const prompt = renderChatml([{ role: 'system', content: (messages || [{}])[0].content || '' },
-                                 { role: 'user', content: `Tools:${NL}${toolList}${NL}Goal: ${goal}` }]);
+    // /completion takes one raw prompt, so the whole window has to be rendered into
+    // it - a model that never sees its own observations repeats the last tool call
+    const thread = (messages || []).filter((m) => m && m.content).map((m) => ({ ...m }));
+    thread.push({ role: 'user', content: `Tools:${NL}${toolList}${NL}Goal: ${goal}` });
+    const prompt = renderChatml(thread);
     const payload = { prompt, temperature: Number(temperature), n_predict: Math.trunc(nPredict), stream: false,
                       no_generation: false, stop: CHATML_STOPS,
-                      json_schema: JSON.stringify({ type: 'object', properties: {
+                      // llama.cpp wants the schema as a JSON object; a string is a 400
+                      json_schema: { type: 'object', properties: {
                         thought: { type: 'string' },
-                        call: { type: 'object', properties: { tool: { enum: tools || [] }, args: { type: 'object' } } },
-                        final: { type: 'string' } }, required: ['thought'] }) };
+                        call: { type: 'object', properties: { tool: names.length ? { enum: names } : { type: 'string' }, args: { type: 'object' } } },
+                        final: { type: 'string' } }, required: ['thought'] } };
     // a router-mode llama-server hosts several models and cannot guess which one
     if (model) payload.model = model;
     const data = await httpJson(`${base.replace(/\/+$/, '')}/completion`, payload, { timeout: this.timeoutFor(180) });
@@ -1784,6 +1847,14 @@ class Agent {
     return [call.value && typeof call.value === 'object' ? call.value : {}, call];
   }
 
+  rememberAction(action) {
+    /* The window must carry the action itself, not just its thought: a completion
+       model that only sees its own reasoning re-emits the same call forever. */
+    const payload = {};
+    for (const key of ['thought', 'call', 'final']) if (action[key]) payload[key] = action[key];
+    this.context.push('assistant', JSON.stringify(payload), 'thought');
+  }
+
   async fileSideChannels(action) {
     let notes = 0, tasks = 0;
     const memory = action.memory;
@@ -1850,7 +1921,7 @@ class Agent {
       const record = await this.call(name, spec.args || {}, 'loop');
       turn.call = record;
       run.turns.push(turn);
-      this.context.push('assistant', thought || name, 'thought');
+      this.rememberAction(action);
       this.context.push('tool', record.observation(), name);
       await this.notify('turn', turn);
       if (this.context.needsCompaction()) {
@@ -1885,7 +1956,7 @@ class Agent {
     }
     const spec = action.call || {};
     const record = await this.call(String(spec.tool || ''), spec.args || {}, 'step');
-    this.context.push('assistant', action.thought || '', 'thought');
+    this.rememberAction(action);
     this.context.push('tool', record.observation(), record.tool);
     return { ok: record.ok, thought: action.thought || '', call: record.brief(), filed };
   }
@@ -2128,6 +2199,20 @@ async function onEvent(kind, detail) {
     el('trail').textContent = `trail: ${detail.trail || '-'}`;
     chat('note', `run ${esc(detail.status)} - ${detail.turns.length} turns, ${detail.compactions} folds, `
       + `${detail.memory_writes} notes filed, ${detail.tasks_created} tasks, ${detail.seconds}s`);
+    if (detail.status === 'model-failed' || detail.status === 'steps-exhausted') {
+      // a dead run is only useful if it says what to do next
+      const why = String(detail.error || '').slice(0, 240);
+      const modelCall = (agent.journal.filter((r) => r.kind === 'model').slice(-1)[0] || {});
+      const endpoint = modelCall.tool || agent.model;
+      chat('warn', `${esc(detail.status)}: ${esc(why || `the loop spent its ${detail.turns.length} turns without an answer`)}`);
+      let hint;
+      if (/network tools are off/i.test(why)) hint = 'flip the network switch in config, or use model.scripted';
+      else if (/allow list/i.test(why)) hint = 'config > rules has an allow list that hides everything not on it - clear it (network has its own switch)';
+      else if (/unreachable|HTTP \d/i.test(why)) hint = `config > model: set base_url to the server's own port (8080 by default; in router mode never a child port like :62655), press detect models and pick one`;
+      else if (/guardrail|needs approval/i.test(why)) hint = `the guardrails stopped ${esc(endpoint)} itself - see the debug pane, then relax the rule`;
+      else hint = 'the model is not answering with the action contract - try model.scripted, or raise the step budget';
+      chat('warn', `hint: ${hint}`);
+    }
   }
   render();
   if (speed()) await sleep(speed());
@@ -2199,7 +2284,6 @@ function drawerHtml(spec) {
 
 function renderTools() {
   if (busyIn(el('tools'))) return;
-  const filter = el('tool-filter').value.trim();
   const counts = {};
   for (const spec of Object.values(agent.registry.tools)) counts[spec.kind] = (counts[spec.kind] || 0) + 1;
   el('c-tools').textContent = `${agent.registry.length} tools, ${agent.visibleTools().length} allowed`;
@@ -2207,7 +2291,7 @@ function renderTools() {
     `<button class="${kind === toolKind ? 'on' : ''}" data-kind="${esc(kind)}">`
     + `${kind || 'all'} (${kind ? counts[kind] : agent.registry.length})</button>`).join('');
   el('tools').innerHTML = agent.registry.brief(toolKind || null)
-    .filter((spec) => !filter || spec.name.includes(filter)).map((spec) => {
+    .map((spec) => {
       const off = denyRule(spec.name);
       const need = agent.policy.confirm_required.includes(spec.name);
       return `<div class="tool-row"><span class="kind">${esc(spec.kind)}</span>`
@@ -2223,46 +2307,73 @@ function renderTools() {
     }).join('');
 }
 
+const RULE_INFO = {
+  deny: ['deny', 'tools that can never run; wins over everything. globs ok, e.g. shell.*'],
+  allow: ['allow only', 'if not empty, the model may drive ONLY these tools (model.* calls are exempt). leave empty for no limit'],
+  confirm_required: ['needs approval', 'tools that wait for an approval before each call'],
+  forbidden_commands: ['forbidden commands', 'shell text that is always refused'],
+  extra_dirs: ['extra dirs', 'folders the sandbox allows besides the root'],
+};
+const BUDGET_INFO = { max_steps: 'model turns per run', max_tool_calls: 'tool calls per run', max_writes: 'write calls per run',
+                      max_deletes: 'delete calls per run', max_seconds: 'wall-clock limit per run' };
+const cfgMsg = (text) => { el('cfg-msg').textContent = text || ''; };
+
+function addRule(knob, pattern) {
+  pattern = String(pattern || '').trim();
+  if (!RULE_LISTS.includes(knob) || !pattern) return;
+  if (agent.policy[knob].includes(pattern)) { cfgMsg(`'${pattern}' is already in ${knob}`); return; }
+  if (knob === 'allow' && !agent.registry.names().some((name) => fnmatch(name, pattern))) {
+    cfgMsg(`'${pattern}' matches no tool, so it was not added - an allow list blocks every tool not on it. `
+      + 'network has its own switch above.');
+    return;
+  }
+  agent.policy[knob] = agent.policy[knob].concat([pattern]);
+  cfgMsg('');
+  saveSettings();
+}
+
+function ruleRow(key) {
+  const [label, help] = RULE_INFO[key];
+  const items = agent.policy[key];
+  return `<div class="setting" data-s="${key} ${esc(label)} ${esc(help)}">
+    <div><b>${esc(label)}</b> <span class="tag">${esc(help)}</span></div>
+    <div class="row">${items.map((item) => `<span class="chip">${esc(item)}<button class="x" title="remove" `
+      + `data-drop-rule="${esc(key + ':' + item)}">&times;</button></span>`).join('') || '<span class="empty">none</span>'}</div>
+    <div class="row"><input type="text" data-addrule-in="${key}" size="24" spellcheck="false" placeholder="add a pattern, press Enter">
+      <button data-addrule="${key}">add</button></div></div>`;
+}
+
 function renderGuardrails() {
-  if (busyIn(el('guardrails'))) return;
   const policy = agent.policy.summary();
+  el('cfg-warn').innerHTML = agent.policy.allow.length
+    ? `<div class="warnbox"><span>an allow list is on: the model can drive only ${esc(agent.policy.allow.join(', '))}</span>`
+      + '<button id="allow-clear">clear allow list</button></div>' : '';
+  if (busyIn(el('guardrails'))) return;
   el('c-blocks').textContent = `${policy.blocked} blocks, ${JSON.stringify(policy.used)}`;
-  const chip = (text, cls, data) => `<span class="chip ${cls || ''}">${esc(text)}</span>`
-    + (data ? `<button class="danger" data-drop-rule="${data}" title="remove">x</button>` : '');
-  const list = (key, cls) => (agent.policy[key].length
-    ? agent.policy[key].map((pattern) => chip(pattern, cls, `${key}:${pattern}`)).join('')
-    : '<span class="empty">none</span>');
-  el('guardrails').innerHTML = `<div class="kv"><b>root</b><span>${esc(agent.root)}</span>
+  el('guardrails').innerHTML = `<div class="setting" data-s="status network dry run granted left root">
+      <div class="kv"><b>root</b><span>${esc(agent.root)}</span>
       <b>network</b><span>${policy.allow_network ? 'on' : 'off'}</span>
       <b>dry run</b><span>${policy.dry_run ? 'on' : 'off'}</span>
-      <b>granted</b><span>${Object.entries(policy.granted).map(([k, v]) =>
-        chip(`${k}${v < 0 ? ' always' : ' once'}`)).join('') || '<span class="empty">none</span>'}</span>
-      <b>left</b><span>${esc(agent.policy.promptBlock())}</span></div>
-    <div class="row"><span class="tag">deny</span>${list('deny', 'missing')}</div>
-    <div class="row"><span class="tag">allow list</span>${list('allow')}</div>
-    <div class="row"><span class="tag">needs approval</span>${list('confirm_required')}</div>
-    <div class="row"><span class="tag">forbidden command patterns</span>${list('forbidden_commands')}</div>
-    <div class="row"><span class="tag">extra dirs the sandbox also allows</span>${list('extra_dirs')}</div>
-    <div class="row"><input id="rule-knob" type="text" list="rule-knobs" size="10" placeholder="knob" value="deny">
-      <datalist id="rule-knobs">${RULE_LISTS.map((key) => `<option value="${key}"></option>`).join('')}</datalist>
-      <input id="rule-pattern" type="text" size="14" placeholder="pattern, e.g. fs.delete">
-      <button id="rule-add">add rule</button></div>
-    <div class="row"><button data-approve="fs.write">approve fs.write once</button>
+      <b>approved</b><span>${Object.entries(policy.granted).map(([k, v]) =>
+        `<span class="chip">${esc(k)}${v < 0 ? ' always' : ' once'}</span>`).join('') || '<span class="empty">none</span>'}</span>
+      <b>left</b><span>${esc(agent.policy.promptBlock())}</span></div></div>`
+    + RULE_LISTS.map(ruleRow).join('')
+    + `<div class="setting" data-s="approve revoke grant fs.write"><div class="row">
+      <button data-approve="fs.write">approve fs.write once</button>
       <button data-approve="fs.write:repeat">approve fs.write always</button>
-      <button class="danger" data-revoke="fs.write">revoke</button></div>
-    <pre>${agent.policy.blocks.slice(-8).map((block) => `${esc(block.tool)}: ${esc(block.reason)}`)
-      .join(NL) || '<span class="empty">nothing blocked yet</span>'}</pre>`;
+      <button class="danger" data-revoke="fs.write">revoke</button></div></div>
+    <div class="setting" data-s="blocked log"><pre>${agent.policy.blocks.slice(-8).map((block) =>
+      `${esc(block.tool)}: ${esc(block.reason)}`).join(NL) || '<span class="empty">nothing blocked yet</span>'}</pre></div>`;
 }
 
 function renderPolicyEditor() {
   if (busyIn(el('policy-editor'))) return;
   const p = agent.policy;
-  el('policy-editor').innerHTML = `<div class="knob">${BUDGETS.map((key) =>
-    `<span>${key}</span><input type="number" step="1" min="0" data-budget="${key}" value="${p[key]}">`).join('')}</div>
-    ${RULE_LISTS.map((key) => `<div class="row"><span class="tag">${key}, one per line</span></div>
-      <textarea data-list="${key}" spellcheck="false">${esc(p[key].join(NL))}</textarea>`).join('')}
-    <div class="row"><button id="policy-apply">apply to policy</button>
-      <button id="policy-defaults">restore factory defaults</button>
+  el('policy-editor').innerHTML = BUDGETS.map((key) =>
+    `<div class="setting knobrow" data-s="${key} ${esc(BUDGET_INFO[key])}"><span><b>${key}</b> `
+    + `<span class="tag">${esc(BUDGET_INFO[key])}</span></span>`
+    + `<input type="number" step="1" min="0" data-budget="${key}" value="${p[key]}"></div>`).join('')
+    + `<div class="row"><button id="policy-defaults">restore factory defaults</button>
       <button id="policy-dump">policy.get</button></div>
     <pre id="policy-note">${esc(drawer.policyNote || '')}</pre>`;
 }
@@ -2273,22 +2384,60 @@ const ENDPOINT_FIELDS = {
   'model.llamacpp': [['base_url', 'LLAMACPP_URL'], ['model', ''], ['temperature', ''], ['n_predict', '']],
 };
 
+const llama = { status: '', ok: null, models: [] };
+const llamaBase = () => String((agent.tool_defaults['model.llamacpp'] || {}).base_url
+  || ENDPOINTS.LLAMACPP_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+
+async function detectLlama() {
+  if (!agent.policy.allow_network) { llama.ok = false; llama.status = 'turn on allow network first (header pill)'; renderEndpoints(); return; }
+  const base = llamaBase();
+  llama.ok = null; llama.status = `asking ${base}/v1/models ...`; renderEndpoints();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const data = await (await fetch(`${base}/v1/models`, { signal: controller.signal })).json();
+    llama.models = (data.data || data.models || []).map((m) => m.id || m.model || m.name).filter(Boolean);
+    llama.ok = true;
+    llama.status = llama.models.length ? `connected - ${llama.models.length} model(s), pick one` : 'connected, but the server lists no models';
+    if (llama.models.length === 1) setToolDefault('model.llamacpp', 'model', llama.models[0]);
+  } catch (error) {
+    llama.ok = false; llama.models = [];
+    llama.status = error.name === 'AbortError'
+      ? `no answer from ${base} in 6s - a router port, not a model's own port (those look like :62655)?`
+      : `cannot reach ${base} - is llama-server running there? If this page is opened from file:///, serve it instead: `
+        + 'python -m http.server, then open http://localhost:8000/agent.html';
+  }
+  clearTimeout(timer);
+  renderEndpoints();
+}
+
+function llamaTools(defaults) {
+  const chosen = defaults.model || '';
+  const options = llama.models.map((id) => `<option value="${esc(id)}"${id === chosen ? ' selected' : ''}>${esc(id)}</option>`).join('');
+  return `<div class="row"><button id="llama-detect">detect models</button>`
+    + (llama.models.length ? `<select id="llama-models"><option value="">pick a model</option>${options}</select>` : '')
+    + `<span class="tag ${llama.ok === false ? 'why' : ''}">${esc(llama.status)}</span></div>`;
+}
+
 function renderEndpoints() {
   if (busyIn(el('endpoints'))) return;
   el('endpoints').innerHTML = Object.entries(ENDPOINT_FIELDS).map(([name, fields]) => {
     const defaults = agent.tool_defaults[name] || {};
-    return `<div class="row"><b>${esc(name)}</b>${denyRule(name) ? ' <span class="why">off</span>' : ''}
-      ${agent.policy.confirm_required.includes(name) && !approved(name) ? ' <span class="why">awaits approval</span>' : ''}</div>
-      <div class="knob">${fields.map(([key, env]) => `<span>${esc(key)}${env ? ` <i class="tag">(env ${esc(env)})</i>` : ''}</span>`
+    const flags = (denyRule(name) ? ' <span class="why">off</span>' : '')
+      + (agent.policy.confirm_required.includes(name) && !approved(name) ? ' <span class="why">awaits approval</span>' : '');
+    return `<div class="setting" data-s="${esc(name)} ${esc(fields.map((f) => f[0] + ' ' + f[1]).join(' '))}">`
+      + `<div class="row"><b>${esc(name)}</b>${flags}</div><div class="knob">`
+      + fields.map(([key, env]) => `<span>${esc(key)}${env ? ` <i class="tag">(env ${esc(env)})</i>` : ''}</span>`
         + `<input type="text" data-endpoint="${esc(name)}" data-key="${esc(key)}" size="26" spellcheck="false" `
-        + `value="${esc(defaults[key] !== undefined ? defaults[key] : (env ? ENDPOINTS[env] : ''))}">`).join('')}</div>`;
+        + `value="${esc(defaults[key] !== undefined ? defaults[key] : (env ? ENDPOINTS[env] : ''))}">`).join('')
+      + '</div>' + (name === 'model.llamacpp' ? llamaTools(defaults) : '') + '</div>';
   }).join('')
-    + `<div class="row"><span class="tag">AGENT_TIMEOUT seconds (blank = per-model default)</span>`
-    + `<input type="text" data-env="AGENT_TIMEOUT" size="6" value="${esc(ENDPOINTS.AGENT_TIMEOUT)}"></div>
-       <div class="row"><button id="endpoints-clear">blank every endpoint default</button></div>
-       <pre>These are written into agent.tool_defaults, so every model.* call gets them without the model
-repeating them - the same merge the loop uses. model.ollama/openai/llamacpp are network tools: they stay
-blocked until allow network is on, and they only answer if something is actually listening.</pre>`;
+    + `<div class="setting" data-s="AGENT_TIMEOUT timeout seconds"><div class="knob">
+      <span>AGENT_TIMEOUT seconds <i class="tag">(blank = per-model default)</i></span>
+      <input type="text" data-env="AGENT_TIMEOUT" size="6" value="${esc(ENDPOINTS.AGENT_TIMEOUT)}"></div></div>
+    <div class="row"><button id="endpoints-clear">blank every endpoint default</button></div>
+    <pre>Saved as tool defaults, so every model.* call gets them. These are network tools: they need the
+network switch on and something listening at the url.</pre>`;
 }
 
 function setToolDefault(name, key, value) {
@@ -2453,6 +2602,25 @@ function renderPanel() { el('panel').textContent = JSON.stringify(agent.panel(),
 function renderConfig() {
   renderTools(); renderGuardrails(); renderPolicyEditor(); renderHooks(); renderSkills(); renderEndpoints();
   syncSwitches();
+  applyConfigFilter();
+}
+
+// one search box for the whole config pane: rows match on text, groups match on their title
+function applyConfigFilter() {
+  const q = el('cfg-search').value.trim().toLowerCase();
+  const hay = (node) => `${node.textContent} ${[...node.querySelectorAll('input,textarea')].map((i) => i.value).join(' ')} `
+    + `${node.dataset.s || ''}`.toLowerCase();
+  let shown = 0;
+  for (const group of document.querySelectorAll('#pane-config details.cfg')) {
+    const titleHit = group.querySelector('summary').firstChild.textContent.toLowerCase().includes(q);
+    const rows = [...group.querySelectorAll('.setting, .tool-row')];
+    for (const row of rows) row.hidden = !!q && !titleHit && !hay(row).toLowerCase().includes(q);
+    const any = !q || titleHit || (rows.length ? rows.some((row) => !row.hidden) : hay(group).toLowerCase().includes(q));
+    group.hidden = !any;
+    if (q && any) group.open = true;
+    if (any) shown += 1;
+  }
+  el('cfg-empty').hidden = shown > 0;
 }
 function renderDebug() {
   renderCalls(); renderRuns(); renderFirings(); renderContext(); renderMemory(); renderTasks();
@@ -2461,6 +2629,8 @@ function renderDebug() {
 
 function render() {
   if (!agent) return;
+  el('net-pill').textContent = `network ${agent.policy.allow_network ? 'on' : 'off'}`;
+  el('net-pill').className = agent.policy.allow_network ? 'on' : 'off';
   el('status').textContent = `tools=${agent.registry.length} allowed=${agent.visibleTools().length} `
     + `blocks=${agent.policy.blocks.length} journal=${agent.journal.length}`;
   if (el('pane-config').classList.contains('on')) renderConfig();
@@ -2962,6 +3132,12 @@ function newAgent(preset = '') {
     if (row.setup) row.setup(agent);
     el('script').value = JSON.stringify(row.script, null, 2);
   }
+  const stale = agent.policy.allow.filter((rule) => !agent.registry.names().some((name) => fnmatch(name, rule)));
+  if (stale.length) {
+    agent.policy.allow = agent.policy.allow.filter((rule) => !stale.includes(rule));
+    saveSettings();
+    cfgMsg(`dropped allow-list entries that match no tool: ${stale.join(', ')}`);
+  }
   const note = loadScript();
   if (el('grant').checked) agent.grant('fs.write', true);
   activeTool = null;
@@ -3014,7 +3190,7 @@ function wire() {
   el('settings-clear').onclick = () => { STORE.set(SETTINGS_KEY, ''); settings = loadSettings(); renderConfig();
     chat('note', 'saved settings forgotten - the next rebuild starts from factory defaults'); };
 
-  el('tool-filter').oninput = renderTools;
+  el('cfg-search').oninput = applyConfigFilter;
   el('tool-tabs').onclick = (event) => { toolKind = event.target.dataset.kind || ''; renderTools(); };
   el('tool-add').onclick = () => {
     const source = window.prompt('Plugin source. tool(name, desc, {args, required}, handler) registers it.\n'
@@ -3040,7 +3216,7 @@ function wire() {
   document.body.addEventListener('click', async (event) => {
     const button = event.target.closest('button[data-toggle],button[data-config],button[data-save-defaults],'
       + 'button[data-clear-defaults],button[data-approve],button[data-revoke],button[data-invoke],button[data-probe],'
-      + 'button[data-drop-rule],#rule-add,#policy-apply,#policy-defaults,#policy-dump,#endpoints-clear,'
+      + 'button[data-drop-rule],button[data-addrule],#allow-clear,#llama-detect,#rule-add,#policy-apply,#policy-defaults,#policy-dump,#endpoints-clear,'
       + 'button[data-unhook],#hook-attach,#hook-secret,#hook-veto,#hook-broken,button[data-forget],#mem-write,'
       + 'button[data-skill-use],button[data-skill-stop],#skill-add,button[data-task-status],#task-create,'
       + 'button[data-job-remove],#job-add,#job-tick,#fs-reset,#ctx-compact,#ctx-read,#layer-set,'
@@ -3097,6 +3273,14 @@ function wire() {
       renderTools();
       return;
     }
+    if (data.addrule) {
+      const box = document.querySelector(`input[data-addrule-in="${data.addrule}"]`);
+      addRule(data.addrule, box && box.value);
+      render();
+      return;
+    }
+    if (button.id === 'allow-clear') { agent.policy.allow = []; saveSettings(); cfgMsg('allow list cleared'); render(); return; }
+    if (button.id === 'llama-detect') { await detectLlama(); return; }
     if (data.dropRule) {
       const [knob, pattern] = data.dropRule.split(/:(.*)/s);
       agent.policy[knob] = agent.policy[knob].filter((item) => item !== pattern);
@@ -3201,6 +3385,14 @@ function wire() {
         : agent.policy.confirm_required.filter((item) => item !== name);
       saveSettings();
       renderTools();
+    } else if (input.id === 'llama-models') {
+      setToolDefault('model.llamacpp', 'model', input.value);
+      input.blur();
+      renderEndpoints();
+    } else if (input.dataset.budget) {
+      agent.policy[input.dataset.budget] = Math.max(0, Number(input.value) || 0);
+      saveSettings();
+      renderGuardrails();
     } else if (input.dataset.endpoint) {
       setToolDefault(input.dataset.endpoint, input.dataset.key, input.value.trim());
       renderTools();
@@ -3210,6 +3402,17 @@ function wire() {
     }
   });
 }
+
+el('net-pill').onclick = () => { el('net').checked = !el('net').checked; el('net').dispatchEvent(new Event('change')); syncSwitches(); };
+
+document.body.addEventListener('keydown', (event) => {
+  const input = event.target;
+  if (event.key === 'Enter' && input.dataset && input.dataset.addruleIn) {
+    addRule(input.dataset.addruleIn, input.value);
+    input.blur();
+    render();
+  }
+});
 
 // -- boot ---------------------------------------------------------------------
 function syncSwitches() {
@@ -3231,7 +3434,10 @@ chat('note', 'four panels: chat drives the loop, config turns tools on and off a
 window.harness = { get agent() { return agent; }, get toolKind() { return toolKind; },
                    Agent, Tool, Registry, tool, Policy, Hooks, Memory, Context, Prompts, Skills, Tasks,
                    Scheduler, Models, Builtins, Call, Turn, Run, evalPlugin, PRESETS, DEMOS, VFS, VFSSeed,
-                   callTool, firstJson, fnmatch, coerce, settings: () => settings, runDemo, runAllDemos,
+                   callTool, firstJson, fnmatch, coerce, renderChatml, chatmlToken,
+                   CHATML_START, CHATML_MESSAGE, CHATML_END, CHATML_STOPS,
+                   GUARDRAIL_TOOLS, OPERATOR_SOURCES,
+                   settings: () => settings, runDemo, runAllDemos,
                    render, renderConfig, renderDebug, showTab, newAgent, rebuild: newAgent };
 // -- end ---------------------------------------------------------------
 </script>

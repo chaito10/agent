@@ -1176,14 +1176,18 @@ class Models {
     const base = baseUrl || this.env.LLAMACPP_URL || 'http://127.0.0.1:8080';
     const toolList = (tools || []).filter((name) => this.registry.has(name))
       .map((name) => `- ${name}: ${this.registry.tools[name].desc}`).join(NL);
-    const prompt = renderChatml([{ role: 'system', content: (messages || [{}])[0].content || '' },
-                                 { role: 'user', content: `Tools:${NL}${toolList}${NL}Goal: ${goal}` }]);
+    // /completion takes one raw prompt, so the whole window has to be rendered into
+    // it - a model that never sees its own observations repeats the last tool call
+    const thread = (messages || []).filter((m) => m && m.content).map((m) => ({ ...m }));
+    thread.push({ role: 'user', content: `Tools:${NL}${toolList}${NL}Goal: ${goal}` });
+    const prompt = renderChatml(thread);
     const payload = { prompt, temperature: Number(temperature), n_predict: Math.trunc(nPredict), stream: false,
                       no_generation: false, stop: CHATML_STOPS,
-                      json_schema: JSON.stringify({ type: 'object', properties: {
+                      // llama.cpp wants the schema as a JSON object; a string is a 400
+                      json_schema: { type: 'object', properties: {
                         thought: { type: 'string' },
                         call: { type: 'object', properties: { tool: { enum: tools || [] }, args: { type: 'object' } } },
-                        final: { type: 'string' } }, required: ['thought'] }) };
+                        final: { type: 'string' } }, required: ['thought'] } };
     // a router-mode llama-server hosts several models and cannot guess which one
     if (model) payload.model = model;
     const data = await httpJson(`${base.replace(/\/+$/, '')}/completion`, payload, { timeout: this.timeoutFor(180) });
@@ -1624,6 +1628,14 @@ class Agent {
     return [call.value && typeof call.value === 'object' ? call.value : {}, call];
   }
 
+  rememberAction(action) {
+    /* The window must carry the action itself, not just its thought: a completion
+       model that only sees its own reasoning re-emits the same call forever. */
+    const payload = {};
+    for (const key of ['thought', 'call', 'final']) if (action[key]) payload[key] = action[key];
+    this.context.push('assistant', JSON.stringify(payload), 'thought');
+  }
+
   async fileSideChannels(action) {
     /* A model can hand back memory/task updates alongside its action. */
     let notes = 0, tasks = 0;
@@ -1687,7 +1699,7 @@ class Agent {
       const record = await this.call(name, spec.args || {}, 'loop');
       turn.call = record;
       run.turns.push(turn);
-      this.context.push('assistant', thought || name, 'thought');
+      this.rememberAction(action);
       this.context.push('tool', record.observation(), name);
       if (this.context.needsCompaction()) {
         const outcome = await this.compact();
@@ -1720,7 +1732,7 @@ class Agent {
     }
     const spec = action.call || {};
     const record = await this.call(String(spec.tool || ''), spec.args || {}, 'step');
-    this.context.push('assistant', action.thought || '', 'thought');
+    this.rememberAction(action);
     this.context.push('tool', record.observation(), record.tool);
     return { ok: record.ok, thought: action.thought || '', call: record.brief(), filed };
   }
@@ -2283,8 +2295,10 @@ module.exports = {
   Agent, Tool, Registry, defaultRegistry, tool, adopt, discover, Policy, Hooks, Memory, Context,
   Prompts, Skills, Tasks, Scheduler, Models, Builtins, Call, Turn, Run, examples, runExamples, main,
   estimateTokens, resolvePath, under, coerce, firstJson, fnmatch, matchesAny, renderChatml, splitCommand,
+  chatmlToken, CHATML_START, CHATML_MESSAGE, CHATML_END, CHATML_STOPS,
   globToRegExp, ToolError, Blocked, UnknownTool, SandboxError,
   BASE_PROMPT, PERSONA_PROMPT, PATH_KEYS, HOOK_EVENTS, TASK_STATUSES, JSON_TYPES,
+  GUARDRAIL_TOOLS, OPERATOR_SOURCES,
   DEFAULT_TOOLS_DIR, ENTRY_POINT_GROUP, MODEL_GROUP, USAGE,
 };
 

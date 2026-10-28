@@ -1147,15 +1147,19 @@ class Models:
         """POST /completion on a llama.cpp server, forcing the action shape with a json_schema."""
         base = base_url or self.env.get("LLAMACPP_URL", "http://127.0.0.1:8080")
         tool_list = "\n".join(f"- {t}: {self.registry.get(t).desc}" for t in (tools or []) if self.registry.has(t))
-        prompt = render_chatml([{"role": "system", "content": (messages or [{}])[0].get("content", "")},
-                                {"role": "user", "content": f"Tools:{NL}{tool_list}{NL}Goal: {goal}"}])
+        # /completion takes one raw prompt, so the whole window has to be rendered into
+        # it - a model that never sees its own observations repeats the last tool call
+        thread = [dict(m) for m in (messages or []) if m.get("content")]
+        thread.append({"role": "user", "content": f"Tools:{NL}{tool_list}{NL}Goal: {goal}"})
+        prompt = render_chatml(thread)
         payload = {"prompt": prompt, "temperature": float(temperature), "n_predict": int(n_predict),
                    "stream": False, "no_generation": False, "stop": CHATML_STOPS,
-                   "json_schema": json.dumps({"type": "object", "properties": {
+                   # llama.cpp wants the schema as a JSON object; a string is a 400
+                   "json_schema": {"type": "object", "properties": {
                        "thought": {"type": "string"},
                        "call": {"type": "object", "properties": {"tool": {"enum": list(tools or [])},
                                                                  "args": {"type": "object"}}},
-                       "final": {"type": "string"}}, "required": ["thought"]})}
+                       "final": {"type": "string"}}, "required": ["thought"]}}
         if model:
             # a router-mode llama-server hosts several models and cannot guess which one
             payload["model"] = model
@@ -1569,6 +1573,12 @@ class Agent:
         value = call.value if isinstance(call.value, dict) else {}
         return value, call
 
+    def remember_action(self, action: dict) -> None:
+        """The window must carry the action itself, not just its thought: a completion
+        model that only sees its own reasoning re-emits the same call forever."""
+        payload = {k: action[k] for k in ("thought", "call", "final") if action.get(k)}
+        self.context.push("assistant", json.dumps(payload, ensure_ascii=False), name="thought")
+
     def file_side_channels(self, action: dict) -> dict:
         """A model can hand back memory/task updates alongside its action."""
         notes = tasks = 0
@@ -1627,7 +1637,7 @@ class Agent:
             record = self.call(name, spec.get("args") or {}, source="loop")
             turn.call = record
             run.turns.append(turn)
-            self.context.push("assistant", thought or name, name="thought")
+            self.remember_action(action)
             self.context.push("tool", record.observation(), name=name)
             if self.context.needs_compaction():
                 run.compactions += 1 if self.compact().get("compacted") else 0
@@ -1656,7 +1666,7 @@ class Agent:
             return {"ok": True, "thought": action.get("thought", ""), "final": action["final"], "filed": filed}
         spec = action.get("call") or {}
         record = self.call(str(spec.get("tool") or ""), spec.get("args") or {}, source="step")
-        self.context.push("assistant", action.get("thought") or "", name="thought")
+        self.remember_action(action)
         self.context.push("tool", record.observation(), name=record.tool)
         return {"ok": record.ok, "thought": action.get("thought", ""), "call": record.brief(), "filed": filed}
 
